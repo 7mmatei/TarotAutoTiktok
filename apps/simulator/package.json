@@ -1,0 +1,1 @@
+{"name":"@tarot/simulator","version":"0.1.0","type":"module","scripts":{"dev":"tsx --env-file=../../.env src/index.ts","preflight":"tsx --env-file=../../.env src/preflight.ts","typecheck":"tsc --noEmit -p tsconfig.json"},"dependencies":{"@tarot/contracts":"workspace:*","@tarot/testkit":"workspace:*"},"devDependencies":{"tsx":"^4.19.2"}}

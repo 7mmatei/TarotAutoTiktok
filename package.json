@@ -1,0 +1,22 @@
+{
+  "name": "tarot-live-engine",
+  "private": true,
+  "packageManager": "pnpm@9.15.5",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @tarot/server --filter @tarot/worker --filter @tarot/dashboard --filter @tarot/renderer --filter @tarot/simulator dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "pnpm --filter @tarot/server db:migrate",
+    "simulator:run": "pnpm --filter @tarot/simulator dev"
+    ,"preflight:live": "pnpm --filter @tarot/simulator preflight"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

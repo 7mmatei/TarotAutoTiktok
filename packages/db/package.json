@@ -1,0 +1,1 @@
+{"name":"@tarot/db","version":"0.1.0","type":"module","exports":{".":"./src/index.ts"},"dependencies":{"@tarot/domain":"workspace:*","drizzle-orm":"^0.38.3","pg":"^8.13.1"},"devDependencies":{"@types/pg":"^8.11.10"}}

@@ -1,0 +1,1 @@
+{"name":"@tarot/worker","version":"0.1.0","type":"module","scripts":{"dev":"tsx --env-file=../../.env src/index.ts","typecheck":"tsc --noEmit -p tsconfig.json"},"dependencies":{"@tarot/config":"workspace:*","@tarot/db":"workspace:*","@tarot/queue":"workspace:*"},"devDependencies":{"tsx":"^4.19.2"}}

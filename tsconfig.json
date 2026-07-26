@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@tarot/contracts": ["packages/contracts/src/index.ts"],
+      "@tarot/domain": ["packages/domain/src/index.ts"],
+      "@tarot/adapters": ["packages/adapters/src/index.ts"],
+      "@tarot/tarot": ["packages/tarot/src/index.ts"],
+      "@tarot/config": ["packages/config/src/index.ts"]
+    }
+  }
+}
