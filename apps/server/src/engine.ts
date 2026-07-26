@@ -57,7 +57,7 @@ export class ReadingEngine {
       // push a paid tier over its advertised word cap.
       const generationInput={ locale: this.store.sessions.get(request.sessionId)?.locale ?? "es-MX", question: request.safeQuestion ?? "", cards: selected.cards, maxWords: Math.max(20,productMaxWords-paidThankYouWords) };
       let reading = await this.generator.generate(generationInput);
-      try { this.validateReading(reading,selected.cards.map((card)=>card.id),generationInput.maxWords); } catch { reading=await new DeterministicReadingGenerator().generate(generationInput); this.validateReading(reading,selected.cards.map((card)=>card.id),generationInput.maxWords); }
+      this.validateReading(reading,selected.cards.map((card)=>card.id),generationInput.maxWords);
       if(paidThankYou) reading={...reading,opening:`${paidThankYou} ${reading.opening}`.trim(),spokenText:`${paidThankYou} ${reading.spokenText}`.trim()};
       this.validateReading(reading,selected.cards.map((card)=>card.id),productMaxWords);
       request.reading = reading;
