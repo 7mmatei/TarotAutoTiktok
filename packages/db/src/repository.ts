@@ -13,7 +13,7 @@ export type DurableProduct = { id:string;accountKey:string;giftId:string;giftNam
 export type DurableFreeGrant = { id:string;sessionId:string;userId:string;platformUserId:string;requestId:string;likeCount:number;createdAt:number };
 export type DurableLikeTotal = { sessionId:string;userId:string;platformUserId:string;quantity:number };
 export type DurableGiftEvent = { id:string;sessionId:string;userId:string;giftId:string;giftName:string;quantity:number;productId?:string;finalizedAt:number };
-export type DurableRecovery = { sessions: Array<{ id: string; accountKey: string; locale: string; status: "LIVE" | "ENDED" | "PAUSED"; startedAt: number; endedAt?: number }>; users: DurableUser[]; comments: DurableComment[]; products?:DurableProduct[]; entitlements: DurableEntitlement[]; requests: DurableRequest[];likeTotals?:DurableLikeTotal[];freeGrants?:Array<Omit<DurableFreeGrant,"requestId">> };
+export type DurableRecovery = { sessions: Array<{ id: string; accountKey: string; locale: string; status: "LIVE" | "ENDED" | "PAUSED"; startedAt: number; endedAt?: number }>; users: DurableUser[]; comments: DurableComment[]; products?:DurableProduct[]; entitlements: DurableEntitlement[]; requests: DurableRequest[];likeTotals?:DurableLikeTotal[];freeGrants?:DurableFreeGrant[] };
 export type DurableIngestion = { event: LiveEvent; source: string; accountKey?:string; locale?:string; user?: DurableUser; comment?: Omit<DurableComment, "id">; giftEvent?:DurableGiftEvent; entitlement?: DurableEntitlement; request?: DurableRequest; likeTotal?:DurableLikeTotal; freeGrant?:DurableFreeGrant; outbox?: { id?: ReturnType<typeof crypto.randomUUID>; topic: string; aggregateId: string; payload: unknown } };
 
 export class DurableRepository {
@@ -60,7 +60,7 @@ export class DurableRepository {
     const commentRows = sessionIds.length ? await this.db.select().from(comments).where(inArray(comments.sessionId, sessionIds)) : [];
     const giftRows=sessionIds.length?await this.db.select().from(giftEvents).where(inArray(giftEvents.sessionId,sessionIds)):[];
     const entRows = giftRows.length?await this.db.select().from(entitlements).where(and(inArray(entitlements.giftEventId,giftRows.map((row)=>row.id)),inArray(entitlements.status, ["AWAITING_QUESTION", "MODERATION", "QUEUED", "FULFILLING", "NEEDS_REPLACEMENT", "MANUAL_REVIEW"]))):[];
-    const reqRows = sessionIds.length ? await this.db.select().from(readingRequests).where(and(inArray(readingRequests.sessionId, sessionIds), inArray(readingRequests.status, ["RECEIVED", "MODERATION", "CARD_SELECTION", "GENERATING_TEXT", "VALIDATING_TEXT", "GENERATING_AUDIO", "READY", "PLAYING", "FAILED_RETRYABLE", "MANUAL_REVIEW"]))) : [];
+    const reqRows = sessionIds.length ? await this.db.select().from(readingRequests).where(and(inArray(readingRequests.sessionId, sessionIds), inArray(readingRequests.status, ["RECEIVED", "MODERATION", "CARD_SELECTION", "GENERATING_TEXT", "VALIDATING_TEXT", "GENERATING_AUDIO", "READY", "PLAYING", "COMPLETED", "FAILED_RETRYABLE", "MANUAL_REVIEW"]))) : [];
     const likeRows=sessionIds.length?await this.db.select().from(likeTotals).where(inArray(likeTotals.sessionId,sessionIds)):[];
     const grantRows=sessionIds.length?await this.db.select().from(freeReadingGrants).where(inArray(freeReadingGrants.sessionId,sessionIds)):[];
     const requestIds = reqRows.map((row) => row.id);
@@ -73,7 +73,7 @@ export class DurableRepository {
       comments: commentRows.map((row) => ({ id: row.id, sessionId: row.sessionId, userId: row.userId, text: row.text, occurredAt: row.occurredAt.getTime() })),
       products:productRows,
       likeTotals:likeRows.map((row)=>({sessionId:row.sessionId,userId:row.userId,platformUserId:row.platformUserId,quantity:row.quantity})),
-      freeGrants:grantRows.map((row)=>({id:row.id,sessionId:row.sessionId,userId:row.userId,platformUserId:row.platformUserId,likeCount:row.likeCount,createdAt:row.createdAt.getTime()})),
+      freeGrants:grantRows.map((row)=>({id:row.id,sessionId:row.sessionId,userId:row.userId,platformUserId:row.platformUserId,requestId:row.requestId,likeCount:row.likeCount,createdAt:row.createdAt.getTime()})),
       entitlements: entRows.map((row) => ({ id: row.id, giftEventId: row.giftEventId, sessionId:giftRows.find((gift)=>gift.id===row.giftEventId)!.sessionId, userId: row.userId, productId: row.productId, status: row.status, ...(row.questionDeadline ? { questionDeadline: row.questionDeadline.getTime() } : {}), ...(row.failureReason ? { failureReason: row.failureReason } : {}), createdAt: row.createdAt.getTime(), ...(row.completedAt ? { completedAt: row.completedAt.getTime() } : {}) })),
       requests: reqRows.map((row) => {
         const reading = readingRows.find((candidate) => candidate.requestId === row.id);

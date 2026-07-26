@@ -32,6 +32,8 @@ export const configSchema = z.object({
   CTA_TTS_ENABLED: envBoolean.default(true),
   CTA_TTS_INITIAL_DELAY_SECONDS: z.coerce.number().int().min(1).max(3_600).default(20),
   CTA_TTS_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(3_600).default(60),
+  CTA_TTS_MIN_GAP_SECONDS: z.coerce.number().int().min(60).max(3_600).default(180),
+  CTA_TTS_MAX_PER_SESSION: z.coerce.number().int().min(0).max(20).default(3),
   CTA_TTS_TEXT: z.string().min(10).max(500).default("Mora está leyendo el chat en vivo. Escribe una pregunta breve para participar."),
   CTA_TTS_TEXTS: z.preprocess((value)=>value===""?undefined:value,z.string().min(10).optional()),
   INTERACTION_TTS_ENABLED: envBoolean.default(true),

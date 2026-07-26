@@ -29,4 +29,19 @@ describe("durable restart recovery", () => {
     expect(store.queue()).toEqual([]);
     expect(store.reviewQueue().map((request) => request.id)).toEqual(["request-1"]);
   });
+
+  it("restores a completed free request together with its persisted grant",()=>{
+    const store=new MemoryStore("demo-account",100);
+    store.restore({
+      sessions:[{id:"session-1",accountKey:"demo-account",locale:"es-MX",status:"LIVE",startedAt:1}],
+      users:[{id:"user-1",platform:"tiktok",platformUserId:"viewer-1",username:"luna",displayName:"Luna"}],
+      comments:[],
+      entitlements:[],
+      freeGrants:[{id:"grant-1",sessionId:"session-1",userId:"user-1",platformUserId:"viewer-1",requestId:"request-1",likeCount:100,createdAt:2}],
+      requests:[{id:"request-1",sessionId:"session-1",userId:"user-1",displayName:"Luna",source:"free",question:"¿Qué energía observo?",status:"COMPLETED",priority:0,queuedAt:2,completedAt:3}]
+    });
+
+    expect(store.freeGrants.size).toBe(1);
+    expect(store.requests.get("request-1")?.status).toBe("COMPLETED");
+  });
 });

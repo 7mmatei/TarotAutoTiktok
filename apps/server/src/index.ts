@@ -78,12 +78,16 @@ const ctaVisuals=[
 ] as const;
 let ctaAssets:Array<{audioUrl:string;durationMs:number;characterState:string;effect:string}>=[];
 let lastCtaIndex=-1;
+let lastCtaPlayedAt=0;
+let sessionCtaCount=0;
 let interactionSpeechBusy=false;
 let interactionSpeechLastAt=0;
 let interactionSpeechWatchdog:NodeJS.Timeout|undefined;
 let commentInteractionSequence=0;
 type PendingCommentInteraction={displayName:string;comment:string;visual?:{characterState:string;effect:string};enqueuedAt:number};
 const pendingCommentInteractions:PendingCommentInteraction[]=[];
+type PendingGiftInteraction={displayName:string;giftName:string;quantity:number;enqueuedAt:number};
+const pendingGiftInteractions:PendingGiftInteraction[]=[];
 let viewerEventsSinceLastCta=0;
 let lastViewerEventAt=0;
 function clearPlaybackWatchdog(): void { if(playbackWatchdog) clearTimeout(playbackWatchdog); playbackWatchdog = undefined; }
@@ -116,6 +120,39 @@ async function promptForGiftQuestion(displayName:string,cards:number):Promise<vo
     app.log.warn({error:String(error)},"interaction TTS synthesis failed");
     finishInteractionSpeech("synthesis_failed");
   }
+}
+function safeGiftNameForSpeech(value:string):string|undefined {
+  const normalized=value.normalize("NFKD").replace(/[\u0300-\u036f]/g,"").replace(/[^\p{L}\p{N}\s-]/gu," ").trim().replace(/\s+/g," ").slice(0,40).trim();
+  return normalized||undefined;
+}
+async function drainGiftInteractionQueue():Promise<void> {
+  if(interactionSpeechBusy||Date.now()-interactionSpeechLastAt<config.INTERACTION_TTS_MIN_INTERVAL_SECONDS*1000||!interactionSpeechCanPlay())return;
+  const pending=pendingGiftInteractions.shift();
+  if(!pending)return;
+  const name=safeViewerNameForSpeech(pending.displayName);
+  const giftName=safeGiftNameForSpeech(pending.giftName);
+  if(!name||!giftName)return;
+  interactionSpeechBusy=true;
+  interactionSpeechLastAt=Date.now();
+  try {
+    const gift=`${pending.quantity>1?`${pending.quantity} `:""}${giftName}`;
+    const text=`${name}, gracias por enviar ${gift}. Los regalos son opcionales; me alegra tenerte aquí en el LIVE.`;
+    const audio=await speech.synthesize({locale:config.DEFAULT_LOCALE,voice:config.TTS_VOICE,text});
+    if(!interactionSpeechCanPlay()){pendingGiftInteractions.unshift(pending);finishInteractionSpeech("superseded_by_reading");return;}
+    store.broadcast({type:"PLAY_INTERACTION_TTS",audioUrl:`/audio/${audio.contentHash}.${audio.format}`,durationMs:audio.durationMs,characterState:"grateful",effect:"heart-glow"});
+    store.actions.push({at:Date.now(),action:"INTERACTION_TTS_PLAYED",detail:{kind:"unmapped_gift_thank_you",giftName,quantity:pending.quantity,durationMs:audio.durationMs}});
+    interactionSpeechWatchdog=setTimeout(()=>finishInteractionSpeech("renderer_timeout"),Math.max(10_000,audio.durationMs+5_000));
+  } catch(error) {
+    app.log.warn({error:String(error)},"unmapped gift TTS synthesis failed");
+    finishInteractionSpeech("synthesis_failed");
+  }
+}
+function queueUnmappedGiftThankYou(displayName:string,giftName:string,quantity:number):void {
+  if(!config.INTERACTION_TTS_ENABLED)return;
+  pendingGiftInteractions.push({displayName,giftName,quantity,enqueuedAt:Date.now()});
+  if(pendingGiftInteractions.length>12)pendingGiftInteractions.splice(0,pendingGiftInteractions.length-12);
+  store.actions.push({at:Date.now(),action:"INTERACTION_QUEUED",detail:{kind:"unmapped_gift",giftName,quantity,pending:pendingGiftInteractions.length}});
+  void drainGiftInteractionQueue();
 }
 function safeCommentSnippet(text:string,maxChars=48):string|undefined {
   if(premoderate(text).action!=="ALLOW")return undefined;
@@ -180,14 +217,17 @@ async function prepareCtaAssets():Promise<void> {
   ctaAssets=await Promise.all(unique.map(async(text,index)=>{const audio=await speech.synthesize({locale:config.DEFAULT_LOCALE,voice:config.TTS_VOICE,text});return{audioUrl:`/audio/${audio.contentHash}.${audio.format}`,durationMs:audio.durationMs,...ctaVisuals[index%ctaVisuals.length]!};}));
 }
 function playCtaIfIdle():void {
-  if(!ctaAssets.length||viewerEventsSinceLastCta===0||Date.now()-lastViewerEventAt>120_000||interactionSpeechBusy||pendingCommentInteractions.length>0||store.currentRequestId||store.pausedPlayback||store.queue().length>0||store.rendererClients.size===0)return;
+  const now=Date.now();
+  if(!ctaAssets.length||sessionCtaCount>=config.CTA_TTS_MAX_PER_SESSION||now-lastCtaPlayedAt<config.CTA_TTS_MIN_GAP_SECONDS*1000||viewerEventsSinceLastCta===0||now-lastViewerEventAt>120_000||interactionSpeechBusy||pendingGiftInteractions.length>0||pendingCommentInteractions.length>0||store.currentRequestId||store.pausedPlayback||store.queue().length>0||store.rendererClients.size===0)return;
   const candidates=ctaAssets.map((_asset,index)=>index).filter((index)=>index!==lastCtaIndex);
   const index=(candidates.length?candidates:[0])[Math.floor(Math.random()*(candidates.length||1))]!;
   const ctaAsset=ctaAssets[index]!;
   lastCtaIndex=index;
+  lastCtaPlayedAt=now;
+  sessionCtaCount++;
   viewerEventsSinceLastCta=0;
   store.broadcast({type:"PLAY_CTA",...ctaAsset});
-  store.actions.push({at:Date.now(),action:"IDLE_CTA_PLAYED",detail:{durationMs:ctaAsset.durationMs,variant:index,characterState:ctaAsset.characterState,effect:ctaAsset.effect}});
+  store.actions.push({at:now,action:"IDLE_CTA_PLAYED",detail:{durationMs:ctaAsset.durationMs,variant:index,sessionCount:sessionCtaCount,maxPerSession:config.CTA_TTS_MAX_PER_SESSION,characterState:ctaAsset.characterState,effect:ctaAsset.effect}});
 }
 function scheduleNextCta():void {
   const jitter=.8+Math.random()*.4;
@@ -198,9 +238,16 @@ function playbackWatchdogDelay(request: Parameters<ReadingEngine["play"]>[0]): n
 async function completePlayback(reason: string): Promise<void> { clearPlaybackWatchdog(); clearLeaseRenewal(); const requestId=store.currentRequestId; if(!requestId) return; const attempt=engine.playbackAttempt(); engine.complete(requestId); await persistRequestState(requestId); if(attempt) await durability.savePlaybackAttempt({id:attempt.id,requestId,commandId:attempt.commandId,status:"COMPLETED",completedAt:Date.now()}); await releasePlaybackLease(); if(reason!=="renderer") app.log.warn({requestId,reason},"playback completed outside the renderer acknowledgment path"); }
 async function failPlayback(reason: string): Promise<void> { clearPlaybackWatchdog(); clearLeaseRenewal(); const requestId=store.currentRequestId; if(!requestId) return; const attempt=engine.playbackAttempt(); engine.failPlayback(requestId,reason); await persistRequestState(requestId); if(attempt) await durability.savePlaybackAttempt({id:attempt.id,requestId,commandId:attempt.commandId,status:"FAILED",error:reason}); await releasePlaybackLease(); store.broadcast({type:"RESET",requestId}); }
 async function startPlayback(request: Parameters<ReadingEngine["play"]>[0]):Promise<boolean> { if(playbackLease && !(await playbackLease.acquire())) return false; try { await engine.play(request); await persistRequestState(request.id); await persistPlayback("PLAYING",{startedAt:Date.now()}); clearPlaybackWatchdog(); playbackWatchdog=setTimeout(()=>{void failPlayback("renderer_completion_timeout");},playbackWatchdogDelay(request)); if(playbackLease) leaseRenewal=setInterval(()=>{void playbackLease.renew().then((renewed)=>{if(!renewed) void failPlayback("playback_lease_lost");});},Math.max(1000,Math.floor(config.PLAYBACK_LEASE_TTL_MS/3))); return true; } catch (error) { clearPlaybackWatchdog(); clearLeaseRenewal(); await releasePlaybackLease(); throw error; } }
-async function recoverFromPersistence():Promise<void> { await durability.ensureProducts([...store.products.values()]); const snapshot=await durability.recover(config.ACCOUNT_KEY); store.restore(snapshot); for(const request of store.requests.values()) { if(["CARD_SELECTION","GENERATING_TEXT","VALIDATING_TEXT","GENERATING_AUDIO"].includes(request.status)) { request.status="FAILED_RETRYABLE"; store.actions.push({at:Date.now(),action:"STUCK_REQUEST_RECOVERED",requestId:request.id}); } if(request.audio?.localPath) { try { await access(request.audio.localPath); } catch { request.status="FAILED_RETRYABLE"; if(request.entitlementId) { const entitlement=store.entitlements.get(request.entitlementId); if(entitlement&&["QUEUED","FULFILLING"].includes(entitlement.status)) entitlement.status="NEEDS_REPLACEMENT"; } store.actions.push({at:Date.now(),action:"MISSING_AUDIO_RECOVERED",requestId:request.id}); } } if(["RECEIVED","MODERATION","FAILED_RETRYABLE"].includes(request.status)) { try { await engine.process(request.id); await persistFulfillment(request.id); } catch(error) { app.log.error({error:String(error),requestId:request.id},"recovered request processing failed"); } } else if(request.status==="READY" || request.status==="PLAYING") await persistRequestState(request.id); } if(snapshot.sessions.length || snapshot.requests.length) app.log.info({sessions:snapshot.sessions.length,requests:snapshot.requests.length},"durable state recovered"); }
+async function recoverFromPersistence():Promise<void> { await durability.ensureProducts([...store.products.values()]); const snapshot=await durability.recover(config.ACCOUNT_KEY); store.restore(snapshot); for(const request of store.requests.values()) { if(["CARD_SELECTION","GENERATING_TEXT","VALIDATING_TEXT","GENERATING_AUDIO"].includes(request.status)) { request.status="FAILED_RETRYABLE"; store.actions.push({at:Date.now(),action:"STUCK_REQUEST_RECOVERED",requestId:request.id}); } if(request.status!=="COMPLETED"&&request.audio?.localPath) { try { await access(request.audio.localPath); } catch { request.status="FAILED_RETRYABLE"; if(request.entitlementId) { const entitlement=store.entitlements.get(request.entitlementId); if(entitlement&&["QUEUED","FULFILLING"].includes(entitlement.status)) entitlement.status="NEEDS_REPLACEMENT"; } store.actions.push({at:Date.now(),action:"MISSING_AUDIO_RECOVERED",requestId:request.id}); } } if(["RECEIVED","MODERATION","FAILED_RETRYABLE"].includes(request.status)) { try { await engine.process(request.id); await persistFulfillment(request.id); } catch(error) { app.log.error({error:String(error),requestId:request.id},"recovered request processing failed"); } } else if(request.status==="READY" || request.status==="PLAYING") await persistRequestState(request.id); } if(snapshot.sessions.length || snapshot.requests.length) app.log.info({sessions:snapshot.sessions.length,requests:snapshot.requests.length},"durable state recovered"); }
 async function auth(request:any,reply:any):Promise<void> { if(request.headers.host?.startsWith("localhost") || request.headers.host?.startsWith("127.0.0.1")) return; if(request.headers.authorization!==`Bearer ${config.ADMIN_TOKEN}`) { reply.code(401).send({error:"Unauthorized"}); } }
 async function internalAuth(request:any,reply:any):Promise<void> { if(request.headers.authorization!==`Bearer ${config.ADMIN_TOKEN}`) reply.code(401).send({error:"Unauthorized"}); }
+function currentSessionMetrics():Record<string,number> {
+  const sessionId=store.latestSession()?.id;
+  const requests=[...store.requests.values()].filter((item)=>!sessionId||item.sessionId===sessionId);
+  const grants=[...store.freeGrants.values()].filter((item)=>!sessionId||item.sessionId===sessionId);
+  const likes=[...store.likeTotals.entries()].filter(([key])=>!sessionId||key.startsWith(`${sessionId}:`)).reduce((sum,[,value])=>sum+value,0);
+  return {events:store.rawEvents.size,users:store.users.size,entitlements:[...store.entitlements.values()].filter((item)=>!sessionId||item.sessionId===sessionId).length,requests:requests.length,completed:requests.filter((item)=>item.status==="COMPLETED").length,paidQueued:requests.filter((item)=>item.source==="paid"&&item.status==="READY").length,freeQueued:requests.filter((item)=>item.source==="free"&&item.status==="READY").length,freeGranted:grants.length,freeCompleted:requests.filter((item)=>item.source==="free"&&item.status==="COMPLETED").length,likes,freeLikesThreshold:store.freeLikesThreshold};
+}
 app.get("/health",async()=>({status:"ok",service:"tarot-live-engine",time:new Date().toISOString()}));
 app.post("/api/internal/worker-heartbeat",{preHandler:internalAuth},async()=>{workerHeartbeatAt=Date.now();return{accepted:true,at:workerHeartbeatAt};});
 app.get("/api/preflight",async()=>preflight);
@@ -247,7 +294,7 @@ app.get("/ready",async(_request,reply)=>{
 });
 app.post("/api/sessions",{preHandler:auth},async(request:any)=>{const session=store.createSession(z.object({locale:z.string().optional()}).parse(request.body ?? {}).locale ?? config.DEFAULT_LOCALE); await durability.createSession({id:session.id,accountKey:session.accountKey,locale:session.locale}); return session;});
 app.post("/api/sessions/:id/end",{preHandler:auth},async(request:any,reply)=>{const session=store.sessions.get(request.params.id);if(!session)return reply.code(404).send({error:"Session not found"});session.status="ENDED";session.endedAt=Date.now();return session;});
-app.get("/api/status",async()=>({session:store.latestSession(),current:store.currentRequest(),queue:store.queue(),review:store.reviewQueue(),awaiting:[...store.entitlements.values()].filter((e)=>e.status==="AWAITING_QUESTION"),recentRequests:[...store.requests.values()].sort((a,b)=>b.queuedAt-a.queuedAt).slice(0,20),llm:{...llmStatus,budget:geminiBudget.snapshot()},interaction:{pendingComments:pendingCommentInteractions.length,busy:interactionSpeechBusy,lastViewerEventAt:lastViewerEventAt?new Date(lastViewerEventAt).toISOString():null,viewerEventsSinceLastCta},metrics:{events:store.rawEvents.size,users:store.users.size,entitlements:store.entitlements.size,requests:store.requests.size,completed:[...store.requests.values()].filter((r)=>r.status==="COMPLETED").length,paidQueued:store.queue().filter((r)=>r.source==="paid").length,freeQueued:store.queue().filter((r)=>r.source==="free").length,freeGranted:store.freeGrants.size,freeCompleted:[...store.requests.values()].filter((r)=>r.source==="free"&&r.status==="COMPLETED").length,likes:[...store.likeTotals.values()].reduce((sum,value)=>sum+value,0),freeLikesThreshold:store.freeLikesThreshold}}));
+app.get("/api/status",async()=>({session:store.latestSession(),current:store.currentRequest(),queue:store.queue(),review:store.reviewQueue(),awaiting:[...store.entitlements.values()].filter((e)=>e.status==="AWAITING_QUESTION"),recentRequests:[...store.requests.values()].sort((a,b)=>b.queuedAt-a.queuedAt).slice(0,20),llm:{...llmStatus,budget:geminiBudget.snapshot()},interaction:{pendingGifts:pendingGiftInteractions.length,pendingComments:pendingCommentInteractions.length,busy:interactionSpeechBusy,lastViewerEventAt:lastViewerEventAt?new Date(lastViewerEventAt).toISOString():null,viewerEventsSinceLastCta},metrics:currentSessionMetrics()}));
 app.get("/api/queue",async()=>({paid:store.queue().filter((r)=>r.source==="paid"),free:store.queue().filter((r)=>r.source==="free")}));
 app.get("/api/requests/:id",async(request:any,reply)=>{const item=store.requests.get(request.params.id);return item ?? reply.code(404).send({error:"Request not found"});});
 app.get("/api/products",async()=>[...store.products.values()]);
@@ -305,12 +352,12 @@ function broadcastViewerPulse(kind:ViewerPulseKind,displayName:string,detail?:st
 function giftEffect(cards:number):string { return cards>=7?"grand-reveal":cards>=5?"constellation-markings":cards>=3?"heart-glow":"golden-plumage"; }
 function broadcastIntakeFeedback(event:LiveEvent,result:ReturnType<MemoryStore["ingest"]>):void {
   if("user" in event) {
-    viewerEventsSinceLastCta++;
     lastViewerEventAt=Date.now();
-    if(event.type==="FOLLOW")broadcastViewerPulse("follow",event.user.displayName);
-    else if(event.type==="JOIN")broadcastViewerPulse("join",event.user.displayName);
+    if(event.type==="FOLLOW"){viewerEventsSinceLastCta++;broadcastViewerPulse("follow",event.user.displayName);}
+    else if(event.type==="JOIN"){viewerEventsSinceLastCta++;broadcastViewerPulse("join",event.user.displayName);}
     else if(event.type==="LIKE")broadcastViewerPulse("like",event.user.displayName);
     else if(event.type==="COMMENT") {
+      viewerEventsSinceLastCta++;
       const snippet=safeCommentSnippet(event.text,28);
       broadcastViewerPulse("comment",event.user.displayName,snippet?`“${snippet}”`:undefined);
     }
@@ -322,7 +369,10 @@ function broadcastIntakeFeedback(event:LiveEvent,result:ReturnType<MemoryStore["
   if(event.type==="GIFT_COMPLETED"&&"user" in event) {
     const product=result.entitlement?[...store.products.values()].find((item)=>item.id===result.entitlement!.productId):undefined;
     if(!product) {
-      store.actions.push({at:Date.now(),action:"UNMAPPED_GIFT",detail:{giftId:event.giftId,giftName:event.giftName}});
+      broadcastViewerPulse("gift",event.user.displayName,event.quantity>1?`${event.quantity} × ${event.giftName}`:event.giftName);
+      store.broadcast({type:"VIEWER_INTERACTION",title:`Gracias, ${event.user.displayName}`,subtitle:`Recibí tu ${event.giftName} · los regalos son opcionales`,characterState:"grateful",effect:"heart-glow",durationMs:5500});
+      queueUnmappedGiftThankYou(event.user.displayName,event.giftName,event.quantity);
+      store.actions.push({at:Date.now(),action:"UNMAPPED_GIFT",detail:{giftId:event.giftId,giftName:event.giftName,acknowledged:true}});
       return;
     }
     broadcastViewerPulse("gift",event.user.displayName,`${product.cards} carta${product.cards===1?"":"s"}`);
@@ -415,6 +465,10 @@ startCtaSchedule();
 consume().catch((error)=>app.log.error(error,"event consumer stopped"));
 setInterval(async()=>{
   if(store.currentRequestId)return;
+  if(pendingGiftInteractions.length>0) {
+    void drainGiftInteractionQueue();
+    if(pendingGiftInteractions.length>0||interactionSpeechBusy)return;
+  }
   if(pendingCommentInteractions.length>0) {
     void drainCommentInteractionQueue();
     if(pendingCommentInteractions.length>0||interactionSpeechBusy)return;

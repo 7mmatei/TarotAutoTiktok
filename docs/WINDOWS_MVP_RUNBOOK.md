@@ -34,6 +34,8 @@ TTS_VOICE=es-MX-DaliaNeural
 CTA_TTS_ENABLED=true
 CTA_TTS_INITIAL_DELAY_SECONDS=20
 CTA_TTS_INTERVAL_SECONDS=60
+CTA_TTS_MIN_GAP_SECONDS=180
+CTA_TTS_MAX_PER_SESSION=3
 CTA_TTS_TEXT=Mora está leyendo el chat en vivo. Escribe una pregunta breve para participar.
 CTA_TTS_TEXTS=Mora está leyendo el chat en vivo. Escribe una pregunta breve para participar.|Cada lectura nace de una pregunta distinta. Cuéntame qué energía quieres mirar hoy.|Las cartas no prometen el futuro: abren una conversación. Deja tu pregunta en el chat.|¿Te llegó una señal esta semana? Escribe tu pregunta y Mora mezclará el mazo contigo.|El mazo está despierto. Una pregunta clara ayuda a encontrar un mensaje para reflexionar.|Si estás pasando por un cambio, comparte una pregunta breve. Las cartas pueden acompañar tu reflexión.|Mora está observando el chat. Tu siguiente pregunta puede ser la próxima lectura en vivo.|Estoy siguiendo lo que ocurre ahora mismo en el chat. Escribe una pregunta breve y conversemos en vivo.|Respira, piensa en tu pregunta y escríbela en el chat. El mensaje de las cartas empieza contigo.|Este espacio es para entretenimiento y reflexión. Comparte una pregunta y participa en el LIVE.
 INTERACTION_TTS_ENABLED=true
@@ -49,7 +51,7 @@ SERVER_URL=http://127.0.0.1:3001
 
 Readings have priority. At most `GEMINI_INTERACTION_DAILY_BUDGET` requests are used for comment reactions, and only every `GEMINI_INTERACTION_EVERY_N_COMMENTS` eligible spoken comments samples Gemini. Other comments receive one of several local, comment-specific responses without consuming Gemini. With the defaults, up to 60 requests go to interactions and at least 390 remain available for readings within the local 450-request ceiling. `/ready` and `/api/status` expose total, reading, interaction, remaining, and skipped counts. Gemini also enforces per-minute and token limits independently, so the daily budget does not guarantee that every request will be accepted.
 
-Azure Speech is primary for readings, CTA prompts, and interaction prompts. CTA audio is cached, but it can play only once after fresh viewer activity and cannot loop in an empty room.
+Azure Speech is primary for readings, CTA prompts, and interaction prompts. CTA audio is cached. Idle CTA prompts require fresh join, follow, or comment activity, have a hard three-minute gap, and stop after three prompts in one server/LIVE session. Likes and Gifts do not re-arm generic CTAs because they receive their own visual feedback, and completed unmapped Gifts also receive a queued, named spoken thank-you without creating a paid reading.
 
 Interaction TTS thanks a mapped gift only when the viewer still needs to post a question. Safe comments enter a bounded queue during readings, receive a short Gemini-sampled or locally varied response tied to that comment, and play between readings. It uses sanitized names and moderated comment text, is limited by `INTERACTION_TTS_MIN_INTERVAL_SECONDS`, and never overlaps reading audio. The Gift template supports `{name}` and `{cards}`. When a paid reading starts, its audio begins with a personalized thank-you. Set `INTERACTION_TTS_ENABLED=false` to turn this feature off.
 
@@ -140,7 +142,7 @@ For automatic process recovery, run these four commands under a Windows service 
 
 ### Provider event troubleshooting
 
-The dashboard now shows the `detail` for each audit action and a Provider diagnostics panel. TikFinity `member` is normalized as `JOIN`, while `roomUser` is normalized as `ROOM_STATS`. `PROVIDER_PAYLOAD_REJECTED` means another WebSocket message arrived without a supported type/identity; copy its `payload` from `/api/provider-events`. `UNMAPPED_GIFT` means the Gift normalized successfully but its exact normalized `giftName` (then legacy `giftId`) is not one of the four enabled products. `LLM_INTERACTION_FAILED` means a viewer-specific Gemini reaction failed and the safe local response was used. `ENTITLEMENT_MODERATION` is a normal transition.
+The dashboard now shows the `detail` for each audit action and a Provider diagnostics panel. TikFinity `member` is normalized as `JOIN`, while `roomUser` is normalized as `ROOM_STATS`. TikFinity `config` and `liveStatusChange` are recognized control packets and do not count as rejected viewer events. `PROVIDER_PAYLOAD_REJECTED` means another WebSocket message arrived without a supported type/identity; copy its `payload` from `/api/provider-events`. `UNMAPPED_GIFT` means the Gift normalized successfully but its exact normalized `giftName` (then legacy `giftId`) is not one of the four enabled reading products; it is acknowledged but does not create a reading. `LLM_INTERACTION_FAILED` means a viewer-specific Gemini reaction failed and the safe local response was used. `ENTITLEMENT_MODERATION` is a normal transition.
 
 ## Readiness boundary
 

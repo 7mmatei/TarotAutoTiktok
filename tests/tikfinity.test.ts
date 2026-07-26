@@ -19,10 +19,10 @@ describe("TikFinity normalization", () => {
     expect(completed).toMatchObject({ type: "GIFT_COMPLETED", giftId: "galaxy", quantity: 1 });
   });
 
-  it("handles the TikFinity gift envelope with top-level user fields", () => {
-    const event = normalizeTikfinityPayload({ event: "gift", data: { giftId: 7934, repeatCount: 1, userId: "6892455204449944581", uniqueId: "alinamantarau82", nickname: "Alina", giftName: "Heart Me", coins: "5", repeatEnd: false } }, "session-1");
+  it("completes non-streak TikFinity gifts even when repeatEnd is false", () => {
+    const event = normalizeTikfinityPayload({ event: "gift", data: { giftId: 7934, repeatCount: 1, giftType:4, userId: "6892455204449944581", uniqueId: "alinamantarau82", nickname: "Alina", giftName: "Heart Me", coins: "5", repeatEnd: false } }, "session-1");
 
-    expect(event).toMatchObject({ type: "GIFT_PROGRESS", giftId: "7934", giftName: "Heart Me", coins: 5, user: { platformUserId: "6892455204449944581", username: "alinamantarau82", displayName: "Alina" } });
+    expect(event).toMatchObject({ type: "GIFT_COMPLETED", giftId: "7934", giftName: "Heart Me", coins: 5, user: { platformUserId: "6892455204449944581", username: "alinamantarau82", displayName: "Alina" } });
   });
 
   it("classifies the repeatEnd message as the single completed gift", () => {
@@ -66,6 +66,16 @@ describe("TikFinity normalization", () => {
     expect(diagnostics[0]).toMatchObject({normalized:true,eventTypes:["GIFT_COMPLETED"]});
     expect(diagnostics[1]).toMatchObject({normalized:false,eventTypes:[]});
     expect(diagnostics[1].payload).toEqual({event:"provider_schema_changed",data:{mystery:true}});
+  });
+
+  it("recognizes TikFinity control packets without counting them as rejected viewer events",()=>{
+    const diagnostics:any[]=[];
+    const source=new TikfinityEventSource("ws://tikfinity.test","session-1",{onPayloadDiagnostic:(diagnostic)=>diagnostics.push(diagnostic)});
+    source.recordRawEvent({event:"config",data:{version:"1"}});
+    source.recordRawEvent({event:"liveStatusChange",data:{isLive:false}});
+
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics.every((item)=>item.normalized&&item.ignoredControl&&item.eventTypes.length===0)).toBe(true);
   });
 
   it("reconnects after the provider socket closes", async () => {

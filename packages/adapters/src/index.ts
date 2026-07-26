@@ -32,6 +32,7 @@ export type TikfinityPayloadDiagnostic = {
   payload: unknown;
   normalized: boolean;
   eventTypes: LiveEvent["type"][];
+  ignoredControl?: boolean;
   error?: string;
 };
 export type TikfinityEventSourceOptions = {
@@ -52,6 +53,11 @@ function numberValue(value: unknown): number | undefined { const number = typeof
 function booleanValue(value: unknown): boolean | undefined { if (typeof value === "boolean") return value; if (typeof value === "number") return value !== 0; if (typeof value === "string") { const normalized = value.trim().toLowerCase(); if (["true", "1", "yes"].includes(normalized)) return true; if (["false", "0", "no"].includes(normalized)) return false; } return undefined; }
 function isoTimestamp(value: unknown, now: Date): string { const number = numberValue(value); if (number !== undefined) { const milliseconds = number < 1_000_000_000_000 ? number * 1000 : number; const date = new Date(milliseconds); if (!Number.isNaN(date.getTime())) return date.toISOString(); } if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString(); return now.toISOString(); }
 function normalizedType(value: unknown): string { return (textValue(value) ?? "").toLowerCase().replace(/[^a-z]/g, ""); }
+function isTikfinityControlPayload(payload:unknown):boolean {
+  const objects=candidates(payload);
+  const type=normalizedType(firstValue(objects,["type","eventType","event","name","action","command"]));
+  return type==="config"||type==="livestatuschange";
+}
 
 export function normalizeTikfinityPayload(payload: unknown, defaultSessionId: string, now = new Date()): LiveEvent | undefined {
   const objects = candidates(payload);
@@ -72,7 +78,7 @@ export function normalizeTikfinityPayload(payload: unknown, defaultSessionId: st
   if (type === "member" || type.includes("join") || type.includes("enter")) return user ? liveEventSchema.parse({ ...common, type: "JOIN", user }) : undefined;
   if (type === "roomuser" || type === "roomstats") { const viewerCount=numberValue(firstValue(objects,["viewerCount","viewer_count","viewers","count"])); return viewerCount!==undefined&&viewerCount>=0?liveEventSchema.parse({...common,type:"ROOM_STATS",viewerCount:Math.floor(viewerCount)}):undefined; }
   if (type.includes("like") || type.includes("heart")) { const quantity = numberValue(firstValue(objects, ["quantity", "count", "likes"])) ?? 1; return user && quantity > 0 ? liveEventSchema.parse({ ...common, type: "LIKE", user, quantity: Math.floor(quantity) }) : undefined; }
-  if (type.includes("gift") || type.includes("rose") || type.includes("diamond")) { const giftRecord = record(firstValue(objects, ["gift", "giftInfo", "gift_info"])); const giftId = textValue(giftRecord && firstValue([giftRecord], ["giftId", "gift_id", "id", "code"])) ?? textValue(firstValue(objects, ["giftId", "gift_id", "giftCode", "gift_code"])); const giftName = textValue(giftRecord && firstValue([giftRecord], ["giftName", "gift_name", "name"])) ?? textValue(firstValue(objects, ["giftName", "gift_name", "name"])) ?? giftId; const quantity = numberValue(giftRecord && firstValue([giftRecord], ["quantity", "count", "repeatCount", "repeat_count"])) ?? numberValue(firstValue(objects, ["quantity", "count", "repeatCount", "repeat_count"])) ?? 1; const coins = numberValue(giftRecord && firstValue([giftRecord], ["coins", "coin", "coinCount", "coin_count", "diamondCount", "diamond_count"])) ?? numberValue(firstValue(objects, ["coins", "coin", "coinCount", "coin_count", "diamondCount", "diamond_count"])); const repeatEnd = booleanValue(giftRecord && firstValue([giftRecord], ["repeatEnd", "repeat_end"])) ?? booleanValue(firstValue(objects, ["repeatEnd", "repeat_end"])); if (!user || !giftId || !giftName || quantity <= 0) return undefined; const progress = repeatEnd !== undefined ? !repeatEnd : type.includes("progress") || type.includes("streak") || type.includes("repeat"); return liveEventSchema.parse({ ...common, type: progress ? "GIFT_PROGRESS" : "GIFT_COMPLETED", user, giftId, giftName, quantity: Math.floor(quantity), ...(coins !== undefined ? { coins } : {}) }); }
+  if (type.includes("gift") || type.includes("rose") || type.includes("diamond")) { const giftRecord = record(firstValue(objects, ["gift", "giftInfo", "gift_info"])); const giftId = textValue(giftRecord && firstValue([giftRecord], ["giftId", "gift_id", "id", "code"])) ?? textValue(firstValue(objects, ["giftId", "gift_id", "giftCode", "gift_code"])); const giftName = textValue(giftRecord && firstValue([giftRecord], ["giftName", "gift_name", "name"])) ?? textValue(firstValue(objects, ["giftName", "gift_name", "name"])) ?? giftId; const quantity = numberValue(giftRecord && firstValue([giftRecord], ["quantity", "count", "repeatCount", "repeat_count"])) ?? numberValue(firstValue(objects, ["quantity", "count", "repeatCount", "repeat_count"])) ?? 1; const coins = numberValue(giftRecord && firstValue([giftRecord], ["coins", "coin", "coinCount", "coin_count", "diamondCount", "diamond_count"])) ?? numberValue(firstValue(objects, ["coins", "coin", "coinCount", "coin_count", "diamondCount", "diamond_count"])); const repeatEnd = booleanValue(giftRecord && firstValue([giftRecord], ["repeatEnd", "repeat_end"])) ?? booleanValue(firstValue(objects, ["repeatEnd", "repeat_end"])); const giftType=numberValue(giftRecord&&firstValue([giftRecord],["giftType","gift_type"]))??numberValue(firstValue(objects,["giftType","gift_type"])); if (!user || !giftId || !giftName || quantity <= 0) return undefined; const progress = giftType!==undefined&&giftType!==1?false:repeatEnd !== undefined ? !repeatEnd : type.includes("progress") || type.includes("streak") || type.includes("repeat"); return liveEventSchema.parse({ ...common, type: progress ? "GIFT_PROGRESS" : "GIFT_COMPLETED", user, giftId, giftName, quantity: Math.floor(quantity), ...(coins !== undefined ? { coins } : {}) }); }
   return undefined;
 }
 
@@ -94,13 +100,14 @@ export class TikfinityEventSource extends SimulatorEventSource {
     const now = this.options.now?.() ?? new Date();
     const eventTypes: LiveEvent["type"][] = [];
     let error: string | undefined;
+    let ignoredControl=false;
     for (const item of Array.isArray(payload) ? payload : [payload]) {
       try {
         const event = normalizeTikfinityPayload(item, this.sessionId, now);
         if (event) {
           eventTypes.push(event.type);
           this.push(event);
-        }
+        } else if(isTikfinityControlPayload(item))ignoredControl=true;
       } catch (cause) {
         error = cause instanceof Error ? cause.message : String(cause);
       }
@@ -108,8 +115,9 @@ export class TikfinityEventSource extends SimulatorEventSource {
     this.options.onPayloadDiagnostic?.({
       receivedAt: now.toISOString(),
       payload,
-      normalized: eventTypes.length > 0,
+      normalized: eventTypes.length > 0||ignoredControl,
       eventTypes,
+      ...(ignoredControl?{ignoredControl:true}:{}),
       ...(error ? { error } : {}),
     });
   }
