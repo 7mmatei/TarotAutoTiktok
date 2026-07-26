@@ -11,7 +11,8 @@ describe("Gemini reading provider",()=>{
     const init=request.mock.calls[0]?.[1] as RequestInit;
     expect((init.headers as Record<string,string>)["x-goog-api-key"]).toBe("secret-key");
     const body=JSON.parse(String(init.body)) as Record<string,unknown>;
-    expect(JSON.stringify(body)).toContain("responseSchema");
+    expect(JSON.stringify(body)).toContain("responseMimeType");
+    expect(JSON.stringify(body)).not.toContain("responseSchema");
     expect(JSON.stringify(body)).not.toContain("temperature");
     expect(JSON.stringify(body)).not.toContain("top_p");
     expect(JSON.stringify(body)).not.toContain("top_k");
