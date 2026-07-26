@@ -56,7 +56,12 @@ function normalizedType(value: unknown): string { return (textValue(value) ?? ""
 function isTikfinityControlPayload(payload:unknown):boolean {
   const objects=candidates(payload);
   const type=normalizedType(firstValue(objects,["type","eventType","event","name","action","command"]));
-  return type==="config"||type==="livestatuschange";
+  // TikFinity emits these informational packets alongside actionable LIVE events.
+  // A roomUser packet without a count is only a presence/control packet, and share
+  // currently has no domain event. Recording either as a rejected payload makes a
+  // healthy stream look broken in diagnostics.
+  return type==="config"||type==="livestatuschange"||type==="share"||
+    (type==="roomuser"&&numberValue(firstValue(objects,["viewerCount","viewer_count","viewers","count"]))===undefined);
 }
 
 export function normalizeTikfinityPayload(payload: unknown, defaultSessionId: string, now = new Date()): LiveEvent | undefined {

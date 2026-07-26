@@ -76,8 +76,9 @@ describe("renderer visual contract", () => {
     // Buffering blips must not toggle the flag - they would snap the beak shut and open.
     expect(renderer).not.toContain('addEventListener("waiting"');
     expect(renderer).not.toContain('addEventListener("stalled"');
-    // All three TTS routes bind it: the reading, the CTA and the interaction reply.
-    expect(renderer.match(/bindSpeech\(/g)?.length).toBe(4);
+    // Every TTS route binds it: reading, CTA, interaction reply and tarot-focus.
+    // The fifth occurrence is the helper declaration itself.
+    expect(renderer.match(/bindSpeech\(/g)?.length).toBe(5);
     // The AVATAR_STATE cue fires on a timer, so it must no longer assert speech.
     const cue = renderer.slice(renderer.indexOf('cue.type === "AVATAR_STATE"'), renderer.indexOf("}, Math.max(0, cue.atMs));"));
     expect(cue).not.toContain("controller.setSpeaking(true)");
@@ -327,13 +328,13 @@ describe("renderer visual contract", () => {
     expect(renderer).toContain('scheduleDeck(380, { cards: [], deckStage: "stacked" })');
   });
 
-  it("keeps critical reading content above the TikTok chat zone", () => {
+  it("uses the full vertical canvas while keeping the live activity centered", () => {
     expect(renderer).toContain("TIKTOK CHAT ZONE · NON-CRITICAL UI ONLY");
     expect(styles).toContain(".phase-message{position:absolute;top:39%");
-    expect(styles).toContain(".tarot-table{position:absolute;top:48%");
-    expect(styles).toContain("height:16.5%");
+    expect(styles).toContain(".live-activity-panel{position:absolute;top:48%;left:7%;right:7%;height:31%");
+    expect(styles).toContain(".tarot-table{position:absolute;top:52.5%;left:5%;right:5%;height:27.5%");
     expect(styles).toContain(".chat-zone{position:absolute;top:66.666%");
-    expect(styles).toContain(".scene-footer{position:absolute;top:84%");
+    expect(styles).toContain(".scene-footer{position:absolute;top:82%");
   });
 
   it("moves the active full deck between Mora's front wings", () => {
@@ -352,8 +353,8 @@ describe("renderer visual contract", () => {
   it("keeps the remaining deck with Mora and gives every spread the full table", () => {
     expect(styles).toContain(".deck-dealing .full-deck,.deck-dealt .full-deck{transform:translate(-50%,-50%) scale(.86) rotate(6deg)}");
     expect(styles).toContain(".cards-row{position:absolute;left:1%;right:1%");
-    expect(styles).toContain("width:min(15%,105px);height:auto;aspect-ratio:30/53");
-    expect(styles).not.toContain(".cards-1 .tarot-card");
+    expect(styles).toContain("width:25%;height:auto;aspect-ratio:30/53");
+    expect(styles).toContain(".cards-1 .tarot-card{width:34%}");
     expect(renderer).toContain('"--deal-x": `${dealOffset}%`');
     expect(styles).toContain("translate(var(--deal-x),-280%)");
   });
@@ -362,7 +363,7 @@ describe("renderer visual contract", () => {
     expect(renderer).toContain("1 | 3 | 5 | 6 | 7");
     expect(renderer).toContain("Math.min(7, count)");
     expect(renderer).toContain('"justice"');
-    expect(styles).toContain(".cards-7 .tarot-card{width:min(11.5%,80px)}");
+    expect(styles).toContain(".cards-7 .tarot-card{width:12.5%}");
   });
 
   it("preserves the established public visual-controller surface", () => {

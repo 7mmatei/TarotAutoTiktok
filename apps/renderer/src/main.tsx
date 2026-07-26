@@ -570,6 +570,28 @@ function ActivityRail({ pulses, locale }: { pulses: ViewerPulse[]; locale: Rende
   </div>;
 }
 
+function LiveActivityPanel({ state }: { state: SceneState }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const latest = state.pulses.slice(-2).reverse();
+  const isReading = state.cards.length > 0 || state.phase !== "waiting";
+  return <section className={`live-activity-panel ${isReading ? "is-reading" : "is-waiting"}`} aria-label="Actividad real del LIVE">
+    <header><span><i /> EN DIRECTO</span><time>{now.toLocaleTimeString(state.locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time></header>
+    {!isReading && <div className="live-activity-body">
+      {latest.length ? latest.map((pulse) => <div className={`live-event live-event-${pulse.kind}`} key={pulse.id}>
+        <b>{pulseCopy[state.locale][pulse.kind].glyph}</b>
+        <span><strong>{pulse.name}</strong><em>{pulse.detail || pulseCopy[state.locale][pulse.kind].action}</em></span>
+      </div>) : <div className="live-listening">
+        <span className="listening-orbit"><i /><i /><i /></span>
+        <span><strong>Mora está observando el chat ahora</strong><em>Escribe una pregunta; cada lectura parte de una interacción real.</em></span>
+      </div>}
+    </div>}
+  </section>;
+}
+
 function SafeZone() {
   return <><div className="safe-zone"><span>SAFE ZONE · MORA LIVE</span><i /><i /><i /><i /></div><div className="chat-zone"><span>TIKTOK CHAT ZONE · NON-CRITICAL UI ONLY</span></div></>;
 }
@@ -595,10 +617,10 @@ function Scene({ state, isLive }: { state: SceneState; isLive: boolean }) {
   // Alternating the animation name is what restarts the hop arc on each move; a key
   // change would restart it too but would remount the owl and drop her blink timers.
   const hopStyle = { animationName: roam.step ? (roam.step % 2 ? "roam-hop-a" : "roam-hop-b") : "none", animationDuration: `${roam.move}ms` } as React.CSSProperties;
-  return <div id={isLive ? "live-scene" : "test-scene"} className={`scene phase-${state.phase} ${isLive ? "production-scene" : ""}`}><Background scene={backgroundScene} roam={roam} /><header className="scene-header"><LogoMark compact />{state.viewerCount>0&&<span className="live-count">● {state.viewerCount} EN VIVO</span>}</header><ActivityRail pulses={state.pulses} locale={state.locale} /><section className="mora-stage"><div className="mora-roam" data-roam-side={roam.side} style={roamStyle}><div className="mora-hop" style={hopStyle}><OwlCharacter state={state.characterState} speaking={state.speaking} mouthLevel={state.mouthLevel} gift={state.gift} eyeOverride={state.eyeOverride} faceHidden={state.faceHidden} speed={state.speed} persona={persona} reaction={state.reaction} /></div>{/* The deck lives here rather than in the table: it is Mora's, so it rides the
+  return <div id={isLive ? "live-scene" : "test-scene"} className={`scene phase-${state.phase} ${state.cards.length ? "has-cards" : "no-cards"} ${state.customTitle ? "has-interaction" : ""} ${isLive ? "production-scene" : ""}`}><Background scene={backgroundScene} roam={roam} /><header className="scene-header"><LogoMark compact />{state.viewerCount>0&&<span className="live-count">● {state.viewerCount} EN VIVO</span>}</header><ActivityRail pulses={state.pulses} locale={state.locale} /><section className="mora-stage"><div className="mora-roam" data-roam-side={roam.side} style={roamStyle}><div className="mora-hop" style={hopStyle}><OwlCharacter state={state.characterState} speaking={state.speaking} mouthLevel={state.mouthLevel} gift={state.gift} eyeOverride={state.eyeOverride} faceHidden={state.faceHidden} speed={state.speed} persona={persona} reaction={state.reaction} /></div>{/* The deck lives here rather than in the table: it is Mora's, so it rides the
       roam wrapper and stays at her wing wherever she walks. The table below is left
       to the cards of the reading alone. */}
-<div className={`mora-deck deck-${state.deckStage}`}><FullDeck /></div></div></section><PhaseMessage state={state} /><TarotTable state={state} /><div className="scene-footer"><div className="tier-strip" aria-label="Tipos de lectura"><span>Perfume · 1</span><span>Hand Heart · 3</span><span>Fairy Hide · 5</span><span>Face-pulling · 7</span></div><div className="cta"><span className="cta-glyph">✦</span><strong>Escribe una pregunta para participar en el LIVE</strong><span className="cta-glyph">✦</span></div><p>Personaje virtual · lectura generada con IA · Entretenimiento y reflexión personal · regalos opcionales{state.viewerCount>0?` · ${state.viewerCount} en vivo`:""}</p></div>{state.safe && <SafeZone />}</div>;
+<div className={`mora-deck deck-${state.deckStage}`}><FullDeck /></div></div></section><PhaseMessage state={state} /><LiveActivityPanel state={state} /><TarotTable state={state} /><div className="scene-footer"><div className="tier-strip" aria-label="Tipos de lectura"><span>Perfume · 1</span><span>Hand Heart · 3</span><span>Fairy Hide · 5</span><span>Face-pulling · 7</span></div><div className="cta"><span className="cta-glyph">✦</span><strong>Escribe una pregunta para participar en el LIVE</strong><span className="cta-glyph">✦</span></div><p>Entretenimiento y reflexión personal · regalos opcionales{state.viewerCount>0?` · ${state.viewerCount} en vivo`:""}</p></div>{state.safe && <SafeZone />}</div>;
 }
 
 function TestPanel({ state, update, controller }: { state: SceneState; update: (patch: Partial<SceneState>) => void; controller: VisualController }) {
@@ -648,6 +670,7 @@ interface RendererServerMessage {
   name?: string;
   detail?: string;
   viewerCount?: number;
+  cardId?: string;
 }
 
 function rendererSocketUrl(): string {
@@ -925,6 +948,50 @@ function useLiveRenderer(enabled: boolean, controller: VisualController): void {
             controller.setCharacterState("idle");
             console.warn("CTA audio autoplay was blocked", ctaUrl);
           });
+        }
+        if (message.type === "PLAY_TAROT_FOCUS" && message.audioUrl && message.cardId && !commandRef.current && !interactionAudioRef.current) {
+          stopCta();
+          controller.showInteraction(
+            message.title ?? "Carta en foco",
+            message.subtitle ?? "Un símbolo del tarot para observar juntos",
+            "mysterious",
+            gifts.includes(message.effect as GiftEffect) ? message.effect as GiftEffect : "card-orbit",
+            Math.max(8_000, (message.durationMs ?? 8_000) + 4_000),
+          );
+          controller.showCards(1);
+          const revealTimer = window.setTimeout(() => controller.revealCard(0, message.cardId, "upright"), 1_950);
+          timerRefs.current.push(revealTimer);
+          const apiProtocol = location.protocol === "https:" ? "https" : "http";
+          const focusUrl = message.audioUrl.startsWith("http") ? message.audioUrl : `${apiProtocol}://${location.hostname}:3001${message.audioUrl}`;
+          const focusAudio = new Audio(focusUrl);
+          focusAudio.preload = "auto";
+          focusAudio.volume = 1;
+          bindSpeech(focusAudio, focusUrl, (active) => { if (ctaAudioRef.current === focusAudio) controller.setSpeaking(active, true); });
+          focusAudio.onended = () => {
+            if (ctaAudioRef.current !== focusAudio) return;
+            ctaAudioRef.current = null;
+            controller.setSpeaking(false);
+            controller.setCharacterState("grateful");
+            const resetTimer = window.setTimeout(() => controller.resetCards(), 1_600);
+            timerRefs.current.push(resetTimer);
+          };
+          focusAudio.onerror = () => {
+            if (ctaAudioRef.current === focusAudio) ctaAudioRef.current = null;
+            controller.setSpeaking(false);
+            controller.resetCards();
+            console.error("Tarot focus audio failed to load", focusUrl);
+          };
+          ctaAudioRef.current = focusAudio;
+          const playTimer = window.setTimeout(() => {
+            if (ctaAudioRef.current !== focusAudio || commandRef.current) return;
+            void focusAudio.play().catch(() => {
+              if (ctaAudioRef.current === focusAudio) ctaAudioRef.current = null;
+              controller.setSpeaking(false);
+              controller.resetCards();
+              console.warn("Tarot focus audio autoplay was blocked", focusUrl);
+            });
+          }, 1_650);
+          timerRefs.current.push(playTimer);
         }
         if (message.type === "PLAY_INTERACTION_TTS" && message.audioUrl && !commandRef.current) {
           stopCta();

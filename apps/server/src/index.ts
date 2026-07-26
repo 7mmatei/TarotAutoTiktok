@@ -10,6 +10,7 @@ import { liveEventSchema, rendererMessageSchema, type LiveEvent } from "@tarot/c
 import { SimulatorEventSource, TikfinityEventSource, createInteractionGenerator, createReadingGenerator, createSpeechProvider, type TikfinityPayloadDiagnostic } from "@tarot/adapters";
 import { premoderate } from "@tarot/domain";
 import { createPlaybackLease, createReadingQueue } from "@tarot/queue";
+import { allCards } from "@tarot/tarot";
 import { MemoryStore } from "./store.js";
 import { ReadingEngine, safeViewerNameForSpeech } from "./engine.js";
 import { createDurability, toDurableEntitlement, toDurableRequest, toDurableUser } from "./durability.js";
@@ -51,6 +52,8 @@ let playbackWatchdog: NodeJS.Timeout | undefined;
 let leaseRenewal:NodeJS.Timeout|undefined;
 let ctaInitialTimer:NodeJS.Timeout|undefined;
 let ctaInterval:NodeJS.Timeout|undefined;
+let tarotFocusInitialTimer:NodeJS.Timeout|undefined;
+let tarotFocusInterval:NodeJS.Timeout|undefined;
 const defaultCtaText="Mora está leyendo el chat en vivo. Escribe una pregunta breve para participar.";
 const defaultCtaTexts=[
   defaultCtaText,
@@ -77,6 +80,10 @@ const ctaVisuals=[
   {characterState:"happy",effect:"luminous-feathers"}
 ] as const;
 let ctaAssets:Array<{audioUrl:string;durationMs:number;characterState:string;effect:string}>=[];
+type TarotFocusAsset={cardId:string;title:string;subtitle:string;audioUrl:string;durationMs:number;characterState:string;effect:string};
+let tarotFocusAssets:TarotFocusAsset[]=[];
+let tarotFocusBag:number[]=[];
+let tarotFocusCount=0;
 let lastCtaIndex=-1;
 let lastCtaPlayedAt=0;
 let sessionCtaCount=0;
@@ -93,6 +100,7 @@ let lastViewerEventAt=0;
 function clearPlaybackWatchdog(): void { if(playbackWatchdog) clearTimeout(playbackWatchdog); playbackWatchdog = undefined; }
 function clearLeaseRenewal():void { if(leaseRenewal) clearInterval(leaseRenewal); leaseRenewal=undefined; }
 function clearCtaSchedule():void { if(ctaInitialTimer) clearTimeout(ctaInitialTimer);if(ctaInterval) clearInterval(ctaInterval);ctaInitialTimer=undefined;ctaInterval=undefined; }
+function clearTarotFocusSchedule():void { if(tarotFocusInitialTimer) clearTimeout(tarotFocusInitialTimer);if(tarotFocusInterval) clearTimeout(tarotFocusInterval);tarotFocusInitialTimer=undefined;tarotFocusInterval=undefined; }
 function clearInteractionSpeechWatchdog():void { if(interactionSpeechWatchdog) clearTimeout(interactionSpeechWatchdog);interactionSpeechWatchdog=undefined; }
 function interactionSpeechCanPlay():boolean { return !store.currentRequestId&&!store.pausedPlayback&&store.rendererClients.size>0; }
 function finishInteractionSpeech(reason:string):void {
@@ -216,6 +224,37 @@ async function prepareCtaAssets():Promise<void> {
   const unique=[...new Set(texts)].slice(0,12);
   ctaAssets=await Promise.all(unique.map(async(text,index)=>{const audio=await speech.synthesize({locale:config.DEFAULT_LOCALE,voice:config.TTS_VOICE,text});return{audioUrl:`/audio/${audio.contentHash}.${audio.format}`,durationMs:audio.durationMs,...ctaVisuals[index%ctaVisuals.length]!};}));
 }
+async function prepareTarotFocusAssets():Promise<void> {
+  if(!config.TAROT_FOCUS_ENABLED)return;
+  const featured=allCards().filter((card)=>!card.id.includes("-of-")).slice(0,22);
+  tarotFocusAssets=await Promise.all(featured.map(async(card,index)=>{
+    const title=`Carta en foco · ${card.names["es-MX"]}`;
+    const subtitle=card.upright.general;
+    const text=`Carta en foco: ${card.names["es-MX"]}. Esta carta invita a reflexionar sobre ${card.upright.general}. Observa el símbolo y cuéntame en el chat qué parte conecta contigo hoy.`;
+    const audio=await speech.synthesize({locale:config.DEFAULT_LOCALE,voice:config.TTS_VOICE,text});
+    return {cardId:card.id,title,subtitle,audioUrl:`/audio/${audio.contentHash}.${audio.format}`,durationMs:audio.durationMs,...ctaVisuals[(index+2)%ctaVisuals.length]!};
+  }));
+}
+function shuffleFocusBag():void {
+  tarotFocusBag=tarotFocusAssets.map((_asset,index)=>index);
+  for(let index=tarotFocusBag.length-1;index>0;index--){const swap=Math.floor(Math.random()*(index+1));[tarotFocusBag[index],tarotFocusBag[swap]]=[tarotFocusBag[swap]!,tarotFocusBag[index]!];}
+}
+function playTarotFocusIfIdle():void {
+  if(!config.TAROT_FOCUS_ENABLED||!tarotFocusAssets.length||tarotFocusCount>=config.TAROT_FOCUS_MAX_PER_SESSION||interactionSpeechBusy||pendingGiftInteractions.length>0||pendingCommentInteractions.length>0||store.currentRequestId||store.pausedPlayback||store.queue().length>0||store.rendererClients.size===0)return;
+  if(!tarotFocusBag.length)shuffleFocusBag();
+  const asset=tarotFocusAssets[tarotFocusBag.shift()!]!;
+  tarotFocusCount++;
+  store.broadcast({type:"PLAY_TAROT_FOCUS",...asset});
+  store.actions.push({at:Date.now(),action:"TAROT_FOCUS_PLAYED",detail:{cardId:asset.cardId,durationMs:asset.durationMs,sessionCount:tarotFocusCount,maxPerSession:config.TAROT_FOCUS_MAX_PER_SESSION}});
+}
+function scheduleNextTarotFocus():void {
+  const jitter=.86+Math.random()*.28;
+  tarotFocusInterval=setTimeout(()=>{playTarotFocusIfIdle();scheduleNextTarotFocus();},Math.round(config.TAROT_FOCUS_INTERVAL_SECONDS*1000*jitter));
+}
+function startTarotFocusSchedule():void {
+  if(!config.TAROT_FOCUS_ENABLED||!tarotFocusAssets.length)return;
+  tarotFocusInitialTimer=setTimeout(()=>{playTarotFocusIfIdle();scheduleNextTarotFocus();},config.TAROT_FOCUS_INITIAL_DELAY_SECONDS*1000);
+}
 function playCtaIfIdle():void {
   const now=Date.now();
   if(!ctaAssets.length||sessionCtaCount>=config.CTA_TTS_MAX_PER_SESSION||now-lastCtaPlayedAt<config.CTA_TTS_MIN_GAP_SECONDS*1000||viewerEventsSinceLastCta===0||now-lastViewerEventAt>120_000||interactionSpeechBusy||pendingGiftInteractions.length>0||pendingCommentInteractions.length>0||store.currentRequestId||store.pausedPlayback||store.queue().length>0||store.rendererClients.size===0)return;
@@ -262,16 +301,18 @@ app.get("/ready",async(_request,reply)=>{
   const stableLiveSession=config.EVENT_SOURCE!=="tikfinity"||Boolean(config.LIVE_SESSION_ID);
   const eventSourceReady=source instanceof TikfinityEventSource?source.isConnected():true;
   const ctaReady=!config.CTA_TTS_ENABLED||ctaAssets.length>0;
+  const tarotFocusReady=!config.TAROT_FOCUS_ENABLED||tarotFocusAssets.length>0;
   const rendererReady=store.rendererClients.size>0;
   const workerAgeMs=workerHeartbeatAt?Date.now()-workerHeartbeatAt:null;
   const workerReady=config.QUEUE_PROVIDER!=="redis"||(workerAgeMs!==null&&workerAgeMs<=config.WORKER_HEARTBEAT_MAX_AGE_MS);
   const preflightReady=!productionConfigured||preflight.status==="passed";
-  const ready=database&&redis&&stableLiveSession&&eventSourceReady&&ctaReady&&rendererReady&&workerReady&&preflightReady&&(productionConfigured||config.PERSISTENCE==="memory");
+  const ready=database&&redis&&stableLiveSession&&eventSourceReady&&ctaReady&&tarotFocusReady&&rendererReady&&workerReady&&preflightReady&&(productionConfigured||config.PERSISTENCE==="memory");
   const blockers=[
     !productionConfigured&&config.PERSISTENCE!=="memory"?"PostgreSQL and Redis production mode is incomplete":undefined,
     !stableLiveSession?"LIVE_SESSION_ID is required for restart-safe TikFinity grants":undefined,
     !eventSourceReady?"TikFinity is not connected":undefined,
     !ctaReady?"CTA audio is not ready":undefined,
+    !tarotFocusReady?"Tarot-focus audio is not ready":undefined,
     !rendererReady?"The 1080x1920 browser renderer is not connected":undefined,
     !workerReady?"The reading worker heartbeat is missing or stale":undefined,
     !preflightReady?"Run pnpm preflight:live and wait for it to pass":undefined,
@@ -286,6 +327,7 @@ app.get("/ready",async(_request,reply)=>{
     worker:{ready:workerReady,lastHeartbeatAt:workerHeartbeatAt?new Date(workerHeartbeatAt).toISOString():null,ageMs:workerAgeMs},
     renderer:{ready:rendererReady,clients:store.rendererClients.size},
     cta:{enabled:config.CTA_TTS_ENABLED,ready:ctaReady,variants:ctaAssets.length},
+    tarotFocus:{enabled:config.TAROT_FOCUS_ENABLED,ready:tarotFocusReady,variants:tarotFocusAssets.length,played:tarotFocusCount,maxPerSession:config.TAROT_FOCUS_MAX_PER_SESSION},
     preflight,
     stableLiveSession,
     productionConfigured,
@@ -455,13 +497,15 @@ async function consume():Promise<void> {
     }
   }
 }
-app.addHook("onClose",async()=>{clearPlaybackWatchdog();clearLeaseRenewal();clearCtaSchedule();clearInteractionSpeechWatchdog();await releasePlaybackLease();if(playbackLease) await playbackLease.close();if(readingQueue)await readingQueue.close();await durability.close();});
+app.addHook("onClose",async()=>{clearPlaybackWatchdog();clearLeaseRenewal();clearCtaSchedule();clearTarotFocusSchedule();clearInteractionSpeechWatchdog();await releasePlaybackLease();if(playbackLease) await playbackLease.close();if(readingQueue)await readingQueue.close();await durability.close();});
 await recoverFromPersistence();
 await prepareCtaAssets();
+await prepareTarotFocusAssets();
 if(source instanceof TikfinityEventSource) { const session=store.createSession(config.DEFAULT_LOCALE,source.sessionId); await durability.createSession({id:session.id,accountKey:session.accountKey,locale:session.locale}); }
 await source.connect();
 await app.listen({host:"127.0.0.1",port:3001});
 startCtaSchedule();
+startTarotFocusSchedule();
 consume().catch((error)=>app.log.error(error,"event consumer stopped"));
 setInterval(async()=>{
   if(store.currentRequestId)return;
