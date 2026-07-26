@@ -141,8 +141,9 @@ export class GeminiReadingGenerator implements ReadingGenerator {
     this.hooks.onAttempt?.();
     try {
       const response=await this.request(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,{method:"POST",headers:{"x-goog-api-key":this.apiKey,"content-type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:`Escribe únicamente una lectura de tarot segura en ${input.locale}, para entretenimiento y reflexión personal. No hagas predicciones ciertas, diagnósticos, consejos médicos, legales o financieros, ni afirmaciones de hechos personales que no estén en la pregunta. Interpreta solamente las cartas proporcionadas, incluye cada cardId exactamente una vez y no excedas ${input.maxWords} palabras en spokenText. El cierre y spokenText deben conservar el aviso de entretenimiento o reflexión.`}]},contents:[{role:"user",parts:[{text:JSON.stringify({question:input.question,cards:input.cards})}]}],generationConfig:{responseMimeType:"application/json",responseSchema}})});
-      if(!response.ok) throw new Error(`Gemini reading request failed (${response.status})`);
-      const body=await response.json() as {candidates?:Array<{content?:{parts?:Array<{text?:string}>}}>};
+      const responseText=typeof response.text==="function"?await response.text():JSON.stringify(await response.json());
+      if(!response.ok) throw new Error(`Gemini reading request failed (${response.status})${responseText?`: ${responseText.slice(0,800)}`:""}`);
+      const body=JSON.parse(responseText) as {candidates?:Array<{content?:{parts?:Array<{text?:string}>}}>};
       const content=body.candidates?.[0]?.content?.parts?.map((part)=>part.text??"").join("").trim();
       if(!content) throw new Error("Gemini reading response was empty");
       const output=readingOutputSchema.parse(JSON.parse(content));
