@@ -267,8 +267,9 @@ describe("renderer visual contract", () => {
   it("emits named viewer pulses so the frame reacts to the audience",()=>{
     expect(renderer).toContain("pushViewerPulse");
     expect(renderer).toContain('message.type === "VIEWER_PULSE"');
+    expect(renderer).toContain('message.type==="ROOM_STATS"');
     expect(renderer).toContain("activity-rail");
-    for(const kind of ["comment","like","follow","gift","share"]) expect(renderer).toContain(`"${kind}"`);
+    for(const kind of ["comment","like","follow","join","gift","share"]) expect(renderer).toContain(`"${kind}"`);
     expect(styles).toContain(".pulse-chip");
     expect(styles).toContain("@keyframes pulse-chip-in");
     // A pulse nudges the mascot without replacing her scripted state animation.
@@ -279,10 +280,12 @@ describe("renderer visual contract", () => {
     // FOLLOW previously had no branch at all, and LIKE only surfaced at the free-reading
     // grant threshold, so neither was ever visible on screen.
     expect(server).toContain('broadcastViewerPulse("follow"');
+    expect(server).toContain('broadcastViewerPulse("join"');
     expect(server).toContain('broadcastViewerPulse("like"');
     expect(server).toContain('broadcastViewerPulse("comment"');
     expect(server).toContain('broadcastViewerPulse("gift"');
     expect(server).toContain('type:"VIEWER_PULSE"');
+    expect(server).toContain('type:"ROOM_STATS"');
     // Likes arrive in bursts, so each kind is rate-limited before it reaches the renderer.
     expect(server).toContain("pulseThrottleMs");
     expect(server).toMatch(/like:\s*2_600/);

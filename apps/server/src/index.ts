@@ -7,12 +7,13 @@ import cors from "@fastify/cors";
 import { z } from "zod";
 import { loadConfig } from "@tarot/config";
 import { liveEventSchema, rendererMessageSchema, type LiveEvent } from "@tarot/contracts";
-import { SimulatorEventSource, TikfinityEventSource, createReadingGenerator, createSpeechProvider, type TikfinityPayloadDiagnostic } from "@tarot/adapters";
+import { SimulatorEventSource, TikfinityEventSource, createInteractionGenerator, createReadingGenerator, createSpeechProvider, type TikfinityPayloadDiagnostic } from "@tarot/adapters";
 import { premoderate } from "@tarot/domain";
 import { createPlaybackLease, createReadingQueue } from "@tarot/queue";
 import { MemoryStore } from "./store.js";
 import { ReadingEngine, safeViewerNameForSpeech } from "./engine.js";
 import { createDurability, toDurableEntitlement, toDurableRequest, toDurableUser } from "./durability.js";
+import { GeminiDailyBudget } from "./geminiBudget.js";
 
 const config=loadConfig();
 const durability=createDurability(config);
@@ -20,9 +21,12 @@ const playbackLease=config.QUEUE_PROVIDER==="redis" ? createPlaybackLease(config
 const readingQueue=config.QUEUE_PROVIDER==="redis" ? createReadingQueue(config.REDIS_URL) : undefined;
 const store=new MemoryStore(config.ACCOUNT_KEY,config.FREE_LIKES_THRESHOLD,config.QUESTION_LOOKBACK_SECONDS*1000,config.AWAITING_QUESTION_SECONDS*1000);
 const speech=createSpeechProvider({provider:config.TTS_PROVIDER,audioDir:config.AUDIO_DIR,region:config.TTS_REGION,voice:config.TTS_VOICE,...(config.TTS_API_KEY ? {apiKey:config.TTS_API_KEY} : {})});
+const geminiBudget=new GeminiDailyBudget(path.join(config.AUDIO_DIR,"gemini-request-budget.json"),config.GEMINI_DAILY_REQUEST_BUDGET,config.GEMINI_INTERACTION_DAILY_BUDGET);
 const llmStatus={provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL,configured:config.LLM_PROVIDER!=="gemini"||Boolean(config.GEMINI_API_KEY),attempts:0,successes:0,failures:0,lastAttemptAt:null as string|null,lastSuccessAt:null as string|null,lastFailureAt:null as string|null,lastError:null as string|null};
 function safeLlmError(error:unknown):string { const message=error instanceof Error?error.message:String(error); return config.GEMINI_API_KEY?message.replaceAll(config.GEMINI_API_KEY,"[redacted]"):message; }
-const generator=createReadingGenerator({provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL,...(config.GEMINI_API_KEY?{apiKey:config.GEMINI_API_KEY}:{}),...(config.LLM_PROVIDER==="gemini"?{hooks:{onAttempt:()=>{llmStatus.attempts++;llmStatus.lastAttemptAt=new Date().toISOString();},onSuccess:()=>{llmStatus.successes++;llmStatus.lastSuccessAt=new Date().toISOString();store.actions.push({at:Date.now(),action:"LLM_REQUEST_SUCCEEDED",detail:{provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL}});},onFailure:(error:unknown)=>{llmStatus.failures++;llmStatus.lastFailureAt=new Date().toISOString();llmStatus.lastError=safeLlmError(error);store.actions.push({at:Date.now(),action:"LLM_REQUEST_FAILED",detail:{provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL,error:safeLlmError(error)}});}}}:{})});
+const generator=createReadingGenerator({provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL,...(config.GEMINI_API_KEY?{apiKey:config.GEMINI_API_KEY}:{}),...(config.LLM_PROVIDER==="gemini"?{hooks:{beforeRequest:()=>{geminiBudget.acquire("reading");},onAttempt:()=>{llmStatus.attempts++;llmStatus.lastAttemptAt=new Date().toISOString();},onSuccess:()=>{llmStatus.successes++;llmStatus.lastSuccessAt=new Date().toISOString();store.actions.push({at:Date.now(),action:"LLM_REQUEST_SUCCEEDED",detail:{provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL}});},onFailure:(error:unknown)=>{llmStatus.failures++;llmStatus.lastFailureAt=new Date().toISOString();llmStatus.lastError=safeLlmError(error);store.actions.push({at:Date.now(),action:"LLM_REQUEST_FAILED",detail:{provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL,error:safeLlmError(error)}});}}}:{})});
+const interactionGenerator=createInteractionGenerator({provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL,...(config.GEMINI_API_KEY?{apiKey:config.GEMINI_API_KEY}:{}),...(config.LLM_PROVIDER==="gemini"?{hooks:{beforeRequest:()=>{geminiBudget.acquire("interaction");},onAttempt:()=>{llmStatus.attempts++;llmStatus.lastAttemptAt=new Date().toISOString();},onSuccess:()=>{llmStatus.successes++;llmStatus.lastSuccessAt=new Date().toISOString();store.actions.push({at:Date.now(),action:"LLM_INTERACTION_SUCCEEDED",detail:{provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL}});},onFailure:(error:unknown)=>{llmStatus.failures++;llmStatus.lastFailureAt=new Date().toISOString();llmStatus.lastError=safeLlmError(error);store.actions.push({at:Date.now(),action:"LLM_INTERACTION_FAILED",detail:{provider:config.LLM_PROVIDER,model:config.GEMINI_MODEL,error:safeLlmError(error)}});}}}:{})});
+const fallbackInteractionGenerator=createInteractionGenerator({provider:"deterministic",model:config.GEMINI_MODEL});
 const engine=new ReadingEngine(store,config.HMAC_SECRET,config.AUDIO_DIR,speech,generator);
 const providerDiagnostics:TikfinityPayloadDiagnostic[]=[];
 function retainProviderDiagnostic(diagnostic:TikfinityPayloadDiagnostic):void {
@@ -56,7 +60,7 @@ const defaultCtaTexts=[
   "El mazo está despierto. Una pregunta clara ayuda a encontrar un mensaje para reflexionar.",
   "Si estás pasando por un cambio, comparte una pregunta breve. Las cartas pueden acompañar tu reflexión.",
   "Mora está observando el chat. Tu siguiente pregunta puede ser la próxima lectura en vivo.",
-  "Regala Perfume, Hand Heart, Fairy Hide o Face-pulling y escribe tu pregunta para una lectura personal.",
+  "Estoy siguiendo lo que ocurre ahora mismo en el chat. Escribe una pregunta breve y conversemos en vivo.",
   "Respira, piensa en tu pregunta y escríbela en el chat. El mensaje de las cartas empieza contigo.",
   "Este espacio es para entretenimiento y reflexión. Comparte una pregunta y participa en el LIVE."
 ];
@@ -77,11 +81,16 @@ let lastCtaIndex=-1;
 let interactionSpeechBusy=false;
 let interactionSpeechLastAt=0;
 let interactionSpeechWatchdog:NodeJS.Timeout|undefined;
+let commentInteractionSequence=0;
+type PendingCommentInteraction={displayName:string;comment:string;visual?:{characterState:string;effect:string};enqueuedAt:number};
+const pendingCommentInteractions:PendingCommentInteraction[]=[];
+let viewerEventsSinceLastCta=0;
+let lastViewerEventAt=0;
 function clearPlaybackWatchdog(): void { if(playbackWatchdog) clearTimeout(playbackWatchdog); playbackWatchdog = undefined; }
 function clearLeaseRenewal():void { if(leaseRenewal) clearInterval(leaseRenewal); leaseRenewal=undefined; }
 function clearCtaSchedule():void { if(ctaInitialTimer) clearTimeout(ctaInitialTimer);if(ctaInterval) clearInterval(ctaInterval);ctaInitialTimer=undefined;ctaInterval=undefined; }
 function clearInteractionSpeechWatchdog():void { if(interactionSpeechWatchdog) clearTimeout(interactionSpeechWatchdog);interactionSpeechWatchdog=undefined; }
-function interactionSpeechCanPlay():boolean { return !store.currentRequestId&&!store.pausedPlayback&&store.queue().length===0&&store.rendererClients.size>0; }
+function interactionSpeechCanPlay():boolean { return !store.currentRequestId&&!store.pausedPlayback&&store.rendererClients.size>0; }
 function finishInteractionSpeech(reason:string):void {
   if(!interactionSpeechBusy)return;
   clearInteractionSpeechWatchdog();
@@ -114,34 +123,54 @@ function safeCommentSnippet(text:string,maxChars=48):string|undefined {
   if(normalized.length<4)return undefined;
   return normalized.slice(0,maxChars).trim();
 }
-const commentResponseTemplates=[
-  "{name}, te leo: {comment}. Mora toma tu pregunta como una invitación a reflexionar.",
-  "Gracias por compartirlo, {name}. Tu pregunta ya está con Mora: quédate y observa qué aparece.",
-  "Mora recibió tu pregunta, {name}. Respira y mira cómo cambia la mesa mientras escuchamos el chat.",
-  "{name}, esa intención queda presente en la mesa. Las cartas son para entretenimiento y reflexión; gracias por participar.",
-];
-let lastCommentResponseIndex=-1;
-async function promptForCommentResponse(displayName:string,comment:string,visual?:{characterState:string;effect:string}):Promise<void> {
-  const snippet=safeCommentSnippet(comment,72);
-  if(!snippet||!config.INTERACTION_TTS_ENABLED||interactionSpeechBusy||Date.now()-interactionSpeechLastAt<config.INTERACTION_TTS_MIN_INTERVAL_SECONDS*1000||!interactionSpeechCanPlay())return;
+async function drainCommentInteractionQueue():Promise<void> {
+  if(interactionSpeechBusy||Date.now()-interactionSpeechLastAt<config.INTERACTION_TTS_MIN_INTERVAL_SECONDS*1000||!interactionSpeechCanPlay())return;
+  const pending=pendingCommentInteractions.shift();
+  if(!pending)return;
+  const snippet=safeCommentSnippet(pending.comment,96);
+  const name=safeViewerNameForSpeech(pending.displayName);
+  if(!snippet||!name)return;
   interactionSpeechBusy=true;
   interactionSpeechLastAt=Date.now();
   try {
-    const name=safeViewerNameForSpeech(displayName);
-    if(!name){finishInteractionSpeech("unsafe_viewer_name");return;}
-    const candidates=commentResponseTemplates.map((_template,index)=>index).filter((index)=>index!==lastCommentResponseIndex);
-    const index=(candidates.length?candidates:[0])[Math.floor(Math.random()*candidates.length)]!;
-    lastCommentResponseIndex=index;
-    const text=commentResponseTemplates[index]!.replaceAll("{name}",name).replaceAll("{comment}",snippet);
-    const audio=await speech.synthesize({locale:config.DEFAULT_LOCALE,voice:config.TTS_VOICE,text});
-    if(!interactionSpeechCanPlay()){finishInteractionSpeech("superseded_by_reading");return;}
-    store.broadcast({type:"PLAY_INTERACTION_TTS",audioUrl:`/audio/${audio.contentHash}.${audio.format}`,durationMs:audio.durationMs,characterState:visual?.characterState??"listening",effect:visual?.effect});
-    store.actions.push({at:Date.now(),action:"INTERACTION_TTS_PLAYED",detail:{kind:"comment_response",durationMs:audio.durationMs,template:index}});
+    let response;
+    let generatedBy:"gemini"|"local"="local";
+    commentInteractionSequence++;
+    const sampledForGemini=config.LLM_PROVIDER==="gemini"&&commentInteractionSequence%config.GEMINI_INTERACTION_EVERY_N_COMMENTS===0;
+    const useGemini=sampledForGemini&&geminiBudget.canUseInteraction();
+    if(useGemini) {
+      try {
+        response=await interactionGenerator.generate({locale:config.DEFAULT_LOCALE,viewerName:name,comment:snippet,maxWords:32});
+        generatedBy="gemini";
+      } catch(error) {
+        app.log.warn({error:String(error)},"Gemini comment interaction generation failed; using safe local response");
+        response=await fallbackInteractionGenerator.generate({locale:config.DEFAULT_LOCALE,viewerName:name,comment:snippet,maxWords:32});
+      }
+    } else {
+      geminiBudget.skipInteraction();
+      store.actions.push({at:Date.now(),action:"LLM_INTERACTION_SKIPPED",detail:{reason:sampledForGemini?"daily_interaction_budget":"sampled_local",everyNComments:config.GEMINI_INTERACTION_EVERY_N_COMMENTS}});
+      response=await fallbackInteractionGenerator.generate({locale:config.DEFAULT_LOCALE,viewerName:name,comment:snippet,maxWords:32});
+    }
+    const audio=await speech.synthesize({locale:config.DEFAULT_LOCALE,voice:config.TTS_VOICE,text:response.spokenText});
+    if(!interactionSpeechCanPlay()){pendingCommentInteractions.unshift(pending);finishInteractionSpeech("superseded_by_reading");return;}
+    store.broadcast({type:"PLAY_INTERACTION_TTS",audioUrl:`/audio/${audio.contentHash}.${audio.format}`,durationMs:audio.durationMs,characterState:pending.visual?.characterState??"listening",effect:pending.visual?.effect});
+    store.actions.push({at:Date.now(),action:"INTERACTION_TTS_PLAYED",detail:{kind:"comment_response",durationMs:audio.durationMs,generatedBy}});
     interactionSpeechWatchdog=setTimeout(()=>finishInteractionSpeech("renderer_timeout"),Math.max(10_000,audio.durationMs+5_000));
   } catch(error) {
     app.log.warn({error:String(error)},"comment interaction TTS synthesis failed");
     finishInteractionSpeech("synthesis_failed");
   }
+}
+function promptForCommentResponse(displayName:string,comment:string,visual?:{characterState:string;effect:string}):void {
+  const snippet=safeCommentSnippet(comment,72);
+  if(!snippet||!config.INTERACTION_TTS_ENABLED)return;
+  const existing=pendingCommentInteractions.findIndex((item)=>item.displayName===displayName);
+  const pending={displayName,comment:snippet,...(visual?{visual}:{}),enqueuedAt:Date.now()};
+  if(existing>=0)pendingCommentInteractions.splice(existing,1,pending);
+  else pendingCommentInteractions.push(pending);
+  if(pendingCommentInteractions.length>8)pendingCommentInteractions.splice(0,pendingCommentInteractions.length-8);
+  store.actions.push({at:Date.now(),action:"INTERACTION_QUEUED",detail:{kind:"comment",pending:pendingCommentInteractions.length}});
+  void drainCommentInteractionQueue();
 }
 async function prepareCtaAssets():Promise<void> {
   if(!config.CTA_TTS_ENABLED)return;
@@ -151,11 +180,12 @@ async function prepareCtaAssets():Promise<void> {
   ctaAssets=await Promise.all(unique.map(async(text,index)=>{const audio=await speech.synthesize({locale:config.DEFAULT_LOCALE,voice:config.TTS_VOICE,text});return{audioUrl:`/audio/${audio.contentHash}.${audio.format}`,durationMs:audio.durationMs,...ctaVisuals[index%ctaVisuals.length]!};}));
 }
 function playCtaIfIdle():void {
-  if(!ctaAssets.length||interactionSpeechBusy||store.currentRequestId||store.pausedPlayback||store.queue().length>0||store.rendererClients.size===0)return;
+  if(!ctaAssets.length||viewerEventsSinceLastCta===0||Date.now()-lastViewerEventAt>120_000||interactionSpeechBusy||pendingCommentInteractions.length>0||store.currentRequestId||store.pausedPlayback||store.queue().length>0||store.rendererClients.size===0)return;
   const candidates=ctaAssets.map((_asset,index)=>index).filter((index)=>index!==lastCtaIndex);
   const index=(candidates.length?candidates:[0])[Math.floor(Math.random()*(candidates.length||1))]!;
   const ctaAsset=ctaAssets[index]!;
   lastCtaIndex=index;
+  viewerEventsSinceLastCta=0;
   store.broadcast({type:"PLAY_CTA",...ctaAsset});
   store.actions.push({at:Date.now(),action:"IDLE_CTA_PLAYED",detail:{durationMs:ctaAsset.durationMs,variant:index,characterState:ctaAsset.characterState,effect:ctaAsset.effect}});
 }
@@ -205,7 +235,7 @@ app.get("/ready",async(_request,reply)=>{
     database:{mode:config.PERSISTENCE,ready:database},
     redis:{mode:config.QUEUE_PROVIDER,ready:redis},
     eventSource:{mode:config.EVENT_SOURCE,ready:eventSourceReady,receivedPayloads:providerDiagnostics.length,rejectedPayloads:providerDiagnostics.filter((item)=>!item.normalized).length},
-    llm:llmStatus,
+    llm:{...llmStatus,budget:geminiBudget.snapshot()},
     worker:{ready:workerReady,lastHeartbeatAt:workerHeartbeatAt?new Date(workerHeartbeatAt).toISOString():null,ageMs:workerAgeMs},
     renderer:{ready:rendererReady,clients:store.rendererClients.size},
     cta:{enabled:config.CTA_TTS_ENABLED,ready:ctaReady,variants:ctaAssets.length},
@@ -217,7 +247,7 @@ app.get("/ready",async(_request,reply)=>{
 });
 app.post("/api/sessions",{preHandler:auth},async(request:any)=>{const session=store.createSession(z.object({locale:z.string().optional()}).parse(request.body ?? {}).locale ?? config.DEFAULT_LOCALE); await durability.createSession({id:session.id,accountKey:session.accountKey,locale:session.locale}); return session;});
 app.post("/api/sessions/:id/end",{preHandler:auth},async(request:any,reply)=>{const session=store.sessions.get(request.params.id);if(!session)return reply.code(404).send({error:"Session not found"});session.status="ENDED";session.endedAt=Date.now();return session;});
-app.get("/api/status",async()=>({session:store.latestSession(),current:store.currentRequest(),queue:store.queue(),review:store.reviewQueue(),awaiting:[...store.entitlements.values()].filter((e)=>e.status==="AWAITING_QUESTION"),recentRequests:[...store.requests.values()].sort((a,b)=>b.queuedAt-a.queuedAt).slice(0,20),llm:llmStatus,metrics:{events:store.rawEvents.size,users:store.users.size,entitlements:store.entitlements.size,requests:store.requests.size,completed:[...store.requests.values()].filter((r)=>r.status==="COMPLETED").length,paidQueued:store.queue().filter((r)=>r.source==="paid").length,freeQueued:store.queue().filter((r)=>r.source==="free").length,freeGranted:store.freeGrants.size,freeCompleted:[...store.requests.values()].filter((r)=>r.source==="free"&&r.status==="COMPLETED").length,likes:[...store.likeTotals.values()].reduce((sum,value)=>sum+value,0),freeLikesThreshold:store.freeLikesThreshold}}));
+app.get("/api/status",async()=>({session:store.latestSession(),current:store.currentRequest(),queue:store.queue(),review:store.reviewQueue(),awaiting:[...store.entitlements.values()].filter((e)=>e.status==="AWAITING_QUESTION"),recentRequests:[...store.requests.values()].sort((a,b)=>b.queuedAt-a.queuedAt).slice(0,20),llm:{...llmStatus,budget:geminiBudget.snapshot()},interaction:{pendingComments:pendingCommentInteractions.length,busy:interactionSpeechBusy,lastViewerEventAt:lastViewerEventAt?new Date(lastViewerEventAt).toISOString():null,viewerEventsSinceLastCta},metrics:{events:store.rawEvents.size,users:store.users.size,entitlements:store.entitlements.size,requests:store.requests.size,completed:[...store.requests.values()].filter((r)=>r.status==="COMPLETED").length,paidQueued:store.queue().filter((r)=>r.source==="paid").length,freeQueued:store.queue().filter((r)=>r.source==="free").length,freeGranted:store.freeGrants.size,freeCompleted:[...store.requests.values()].filter((r)=>r.source==="free"&&r.status==="COMPLETED").length,likes:[...store.likeTotals.values()].reduce((sum,value)=>sum+value,0),freeLikesThreshold:store.freeLikesThreshold}}));
 app.get("/api/queue",async()=>({paid:store.queue().filter((r)=>r.source==="paid"),free:store.queue().filter((r)=>r.source==="free")}));
 app.get("/api/requests/:id",async(request:any,reply)=>{const item=store.requests.get(request.params.id);return item ?? reply.code(404).send({error:"Request not found"});});
 app.get("/api/products",async()=>[...store.products.values()]);
@@ -237,14 +267,14 @@ app.get("/audio/:file",async(request:any,reply)=>{const file=path.basename(Strin
 app.register(async(instance)=>{instance.get("/ws/renderer",{websocket:true},(socket:any)=>{store.rendererClients.add(socket);socket.send(JSON.stringify({sequence:store.rendererSequence,type:"SNAPSHOT",status:{current:store.currentRequest(),queue:store.queue()}}));socket.on("message",(raw:Buffer)=>{void (async()=>{try {const parsed=rendererMessageSchema.safeParse(JSON.parse(raw.toString()));if(!parsed.success)return;const message=parsed.data;const attempt=engine.playbackAttempt();if("commandId" in message&&message.commandId&&attempt&&message.commandId!==attempt.commandId)return;if(message.type==="READY") socket.send(JSON.stringify({sequence:store.rendererSequence,type:"SNAPSHOT",status:{current:store.currentRequest(),queue:store.queue()}}));if(message.type==="STARTED") await persistPlayback("STARTED",{lastHeartbeatAt:Date.now()});if(message.type==="HEARTBEAT"||message.type==="PROGRESS") { if(playbackLease) await playbackLease.renew(); await persistPlayback("PLAYING",{lastHeartbeatAt:Date.now()}); } if(message.type==="COMPLETED"&&message.commandId===attempt?.commandId) await completePlayback("renderer"); if(message.type==="ERROR") await failPlayback(`renderer_error:${message.error}`); if(message.type==="INTERACTION_COMPLETED") finishInteractionSpeech("renderer_completed"); if(message.type==="INTERACTION_ERROR") finishInteractionSpeech(`renderer_error:${message.error}`); } catch {/* malformed renderer messages are ignored */}})();});socket.on("close",()=>{store.rendererClients.delete(socket);finishInteractionSpeech("renderer_disconnected");if(store.currentRequestId) void failPlayback("renderer_disconnected");});});});
 app.register(async(instance)=>{instance.get("/ws/dashboard",{websocket:true},(socket:any)=>{const timer=setInterval(()=>socket.send(JSON.stringify({type:"STATUS",status:{session:store.latestSession(),current:store.currentRequest(),queue:store.queue(),awaiting:[...store.entitlements.values()].filter((e)=>e.status==="AWAITING_QUESTION")}})),1000);socket.on("close",()=>clearInterval(timer));});});
 let lastPassiveInteractionAt=0;
-type ViewerPulseKind="comment"|"like"|"follow"|"gift";
+type ViewerPulseKind="comment"|"like"|"follow"|"join"|"gift";
 /**
  * Ambient audience feedback for the renderer's activity rail. Separate from
  * VIEWER_INTERACTION: a pulse is a named one-line acknowledgement that keeps running
  * underneath a reading, where VIEWER_INTERACTION takes over the headline and is
  * suppressed during playback. Likes arrive in bursts, so each kind is throttled.
  */
-const pulseThrottleMs:Record<ViewerPulseKind,number>={comment:1_400,like:2_600,follow:700,gift:0};
+const pulseThrottleMs:Record<ViewerPulseKind,number>={comment:1_400,like:2_600,follow:700,join:900,gift:0};
 const lastPulseAt:Partial<Record<ViewerPulseKind,number>>={};
 const commentVisuals=[
   {characterState:"listening",effect:"card-orbit"},
@@ -275,12 +305,19 @@ function broadcastViewerPulse(kind:ViewerPulseKind,displayName:string,detail?:st
 function giftEffect(cards:number):string { return cards>=7?"grand-reveal":cards>=5?"constellation-markings":cards>=3?"heart-glow":"golden-plumage"; }
 function broadcastIntakeFeedback(event:LiveEvent,result:ReturnType<MemoryStore["ingest"]>):void {
   if("user" in event) {
+    viewerEventsSinceLastCta++;
+    lastViewerEventAt=Date.now();
     if(event.type==="FOLLOW")broadcastViewerPulse("follow",event.user.displayName);
+    else if(event.type==="JOIN")broadcastViewerPulse("join",event.user.displayName);
     else if(event.type==="LIKE")broadcastViewerPulse("like",event.user.displayName);
     else if(event.type==="COMMENT") {
       const snippet=safeCommentSnippet(event.text,28);
       broadcastViewerPulse("comment",event.user.displayName,snippet?`“${snippet}”`:undefined);
     }
+  }
+  if(event.type==="ROOM_STATS") {
+    store.broadcast({type:"ROOM_STATS",viewerCount:event.viewerCount});
+    return;
   }
   if(event.type==="GIFT_COMPLETED"&&"user" in event) {
     const product=result.entitlement?[...store.products.values()].find((item)=>item.id===result.entitlement!.productId):undefined;
@@ -306,7 +343,7 @@ function broadcastIntakeFeedback(event:LiveEvent,result:ReturnType<MemoryStore["
     const snippet=safeCommentSnippet(event.text,64);
     const visual=nextCommentVisual();
     store.broadcast({type:"VIEWER_INTERACTION",title:`Te leo, ${event.user.displayName}`,subtitle:snippet?`“${snippet}”`:product?`Tu lectura de ${product.cards} carta${product.cards===1?"":"s"} está entrando en la fila`:"Tu lectura está entrando en la fila",characterState:visual.characterState,effect:visual.effect,durationMs:5500});
-    void promptForCommentResponse(event.user.displayName,event.text,visual);
+    promptForCommentResponse(event.user.displayName,event.text,visual);
     return;
   }
   if(result.created&&event.type==="LIKE"&&"user" in event) {
@@ -318,7 +355,7 @@ function broadcastIntakeFeedback(event:LiveEvent,result:ReturnType<MemoryStore["
     const snippet=safeCommentSnippet(event.text,64);
     const visual=nextCommentVisual();
     store.broadcast({type:"VIEWER_INTERACTION",title:`Te leo, ${event.user.displayName}`,subtitle:snippet?`“${snippet}”`:"Mora está escuchando el chat en vivo",characterState:visual.characterState,effect:visual.effect,durationMs:4500});
-    void promptForCommentResponse(event.user.displayName,event.text,visual);
+    promptForCommentResponse(event.user.displayName,event.text,visual);
   }
 }
 async function dispatchReading(requestId:string,outboxId:string):Promise<void> {
@@ -376,6 +413,21 @@ await source.connect();
 await app.listen({host:"127.0.0.1",port:3001});
 startCtaSchedule();
 consume().catch((error)=>app.log.error(error,"event consumer stopped"));
-setInterval(async()=>{if(!store.currentRequestId) {try {const next=engine.next();if(!next) return;const started=await startPlayback(next);if(!started) return;} catch(error) {app.log.error(error,"playback start failed");}}},1000);
+setInterval(async()=>{
+  if(store.currentRequestId)return;
+  if(pendingCommentInteractions.length>0) {
+    void drainCommentInteractionQueue();
+    if(pendingCommentInteractions.length>0||interactionSpeechBusy)return;
+  }
+  if(interactionSpeechBusy)return;
+  try {
+    const next=engine.next();
+    if(!next)return;
+    const started=await startPlayback(next);
+    if(!started)return;
+  } catch(error) {
+    app.log.error(error,"playback start failed");
+  }
+},1000);
 setInterval(()=>{void (async()=>{for(const entitlement of store.expireAwaitingQuestions()) await durability.saveEntitlement(toDurableEntitlement(entitlement));})().catch((error)=>app.log.error(error,"awaiting-question reconciliation failed"));},30_000);
 app.log.info({port:3001},"tarot live engine ready");

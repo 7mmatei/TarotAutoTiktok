@@ -43,6 +43,14 @@ describe("TikFinity normalization", () => {
     expect(event).toMatchObject({ type: "GIFT_COMPLETED", giftId: "5655", giftName: "Rose", coins: 1, user: { platformUserId: "u-desktop", displayName: "Desktop Viewer" } });
   });
 
+  it("normalizes TikFinity room joins and viewer counts as live state",()=>{
+    const joined=normalizeTikfinityPayload({event:"member",data:{userId:"u-join",uniqueId:"luna",nickname:"Luna",displayType:"live_room_enter_toast"}},"session-1");
+    const room=normalizeTikfinityPayload({event:"roomUser",data:{viewerCount:7,tikfinityUsername:"mora.lecturas"}},"session-1");
+
+    expect(joined).toMatchObject({type:"JOIN",user:{platformUserId:"u-join",displayName:"Luna"}});
+    expect(room).toMatchObject({type:"ROOM_STATS",viewerCount:7});
+  });
+
   it("rejects unknown or incomplete provider payloads", () => {
     expect(normalizeTikfinityPayload({ type: "unknown", id: "x" }, "session-1")).toBeUndefined();
     expect(normalizeTikfinityPayload({ type: "comment", text: "missing user" }, "session-1")).toBeUndefined();

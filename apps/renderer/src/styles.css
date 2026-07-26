@@ -240,8 +240,11 @@ button,input{font:inherit}
 .pulse-gift i{color:var(--amber-glow)}
 .pulse-gift{border-color:#efa98f66;box-shadow:0 4px 16px #efa98f26}
 .pulse-follow i{color:#a8e0c0}
+.pulse-join i{color:#9ec6f0}
 
-.scene-header{position:absolute;top:2.6%;left:6.5%;right:6.5%;height:5.2%;z-index:4;display:flex;align-items:center}
+.scene-header{position:absolute;top:2.6%;left:6.5%;right:6.5%;height:5.2%;z-index:4;display:flex;align-items:center;justify-content:space-between}
+.live-count{padding:5px 8px;border:1px solid #dfbc6742;border-radius:999px;background:#100c24c7;color:var(--text-muted);font:600 clamp(7px,1.55vw,9px)/1 "DM Sans",sans-serif;letter-spacing:.08em;box-shadow:0 4px 12px #06040c55;backdrop-filter:blur(3px)}
+.live-count::first-letter{color:#a8e0c0}
 .logo-lockup{display:flex;align-items:center;gap:10px}
 .logo-mark{width:36px;height:36px;filter:drop-shadow(0 5px 12px #0b061680)}
 .logo-type{display:flex;flex-direction:column;gap:1px}

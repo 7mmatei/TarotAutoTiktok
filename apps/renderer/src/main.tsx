@@ -17,7 +17,7 @@ type EyeMode = "neutral" | "focused" | "wide" | "squint" | "closed" | "sleepy" |
 type BeakMode = "closed" | "slightly-open" | "medium-open" | "wide-open" | "rounded" | "smile-like" | "concerned";
 type DeckStage = "stacked" | "gathering" | "shuffling" | "finishing" | "squaring" | "flourish" | "dealing" | "dealt";
 type CardOrientation = "upright" | "reversed";
-export type PulseKind = "comment" | "like" | "follow" | "gift" | "share";
+export type PulseKind = "comment" | "like" | "follow" | "join" | "gift" | "share";
 interface ViewerPulse { id: number; kind: PulseKind; name: string; detail: string }
 interface MascotReaction { id: number; kind: PulseKind; durationMs: number }
 
@@ -25,6 +25,7 @@ export interface VisualController {
   setCharacterState(state: CharacterState): void;
   setViewer(name: string, question?: string): void;
   setStatus(text: string): void;
+  setViewerCount(count: number): void;
   showInteraction(title: string, subtitle: string, state?: CharacterState, effect?: GiftEffect, durationMs?: number): void;
   showCards(count: 1 | 3 | 5 | 6 | 7): void;
   revealCard(index: number, cardId?: string, orientation?: CardOrientation): void;
@@ -55,7 +56,7 @@ const legacyGiftMap: Record<LegacyGiftEffect, GiftEffect> = { "gold-crown": "gol
 const visualPhases: VisualPhase[] = ["waiting", "preparing", "shuffling", "reading", "revealing", "complete"];
 // "share" has no LIVE event behind it yet (liveEventSchema has no SHARE member), so it is
 // reachable only from the test panel. It stays here so the rail is ready if one is added.
-const pulseKinds: PulseKind[] = ["comment", "like", "follow", "gift", "share"];
+const pulseKinds: PulseKind[] = ["comment", "like", "follow", "join", "gift", "share"];
 const samplePulseNames = ["Luna", "Carlitos", "Rosa M.", "Andrea", "Beto", "Mariana"];
 /** Matches the pulse-chip animation in styles.css. */
 const PULSE_LIFETIME_MS = 5200;
@@ -75,7 +76,7 @@ function LogoMark({ compact = false }: { compact?: boolean }) {
 }
 
 interface SceneCard { id: string; orientation: CardOrientation; revealed: boolean; selected: boolean }
-interface SceneState { characterState: CharacterState; phase: VisualPhase; deckStage: DeckStage; locale: RendererLocale; viewer: string; question: string; status: string; customTitle: string; customSubtitle: string; cards: SceneCard[]; speaking: boolean; mouthLevel: number; gift: GiftEffect | null; safe: boolean; eyeOverride: EyeMode | null; speed: number; faceHidden: boolean; preview360: boolean; pulses: ViewerPulse[]; reaction: MascotReaction | null }
+interface SceneState { characterState: CharacterState; phase: VisualPhase; deckStage: DeckStage; locale: RendererLocale; viewer: string; question: string; status: string; customTitle: string; customSubtitle: string; viewerCount:number; cards: SceneCard[]; speaking: boolean; mouthLevel: number; gift: GiftEffect | null; safe: boolean; eyeOverride: EyeMode | null; speed: number; faceHidden: boolean; preview360: boolean; pulses: ViewerPulse[]; reaction: MascotReaction | null }
 const initialCards = (count = 3): SceneCard[] => demoCards.slice(0, count).map((id) => ({ id, orientation: "upright", revealed: false, selected: false }));
 
 const backgroundScenes = ["velvet-cosmos", "moon-phases", "candle-altar", "crystal-chamber", "zodiac-wheel", "arcane-library"] as const;
@@ -594,10 +595,10 @@ function Scene({ state, isLive }: { state: SceneState; isLive: boolean }) {
   // Alternating the animation name is what restarts the hop arc on each move; a key
   // change would restart it too but would remount the owl and drop her blink timers.
   const hopStyle = { animationName: roam.step ? (roam.step % 2 ? "roam-hop-a" : "roam-hop-b") : "none", animationDuration: `${roam.move}ms` } as React.CSSProperties;
-  return <div id={isLive ? "live-scene" : "test-scene"} className={`scene phase-${state.phase} ${isLive ? "production-scene" : ""}`}><Background scene={backgroundScene} roam={roam} /><header className="scene-header"><LogoMark compact /></header><ActivityRail pulses={state.pulses} locale={state.locale} /><section className="mora-stage"><div className="mora-roam" data-roam-side={roam.side} style={roamStyle}><div className="mora-hop" style={hopStyle}><OwlCharacter state={state.characterState} speaking={state.speaking} mouthLevel={state.mouthLevel} gift={state.gift} eyeOverride={state.eyeOverride} faceHidden={state.faceHidden} speed={state.speed} persona={persona} reaction={state.reaction} /></div>{/* The deck lives here rather than in the table: it is Mora's, so it rides the
+  return <div id={isLive ? "live-scene" : "test-scene"} className={`scene phase-${state.phase} ${isLive ? "production-scene" : ""}`}><Background scene={backgroundScene} roam={roam} /><header className="scene-header"><LogoMark compact />{state.viewerCount>0&&<span className="live-count">● {state.viewerCount} EN VIVO</span>}</header><ActivityRail pulses={state.pulses} locale={state.locale} /><section className="mora-stage"><div className="mora-roam" data-roam-side={roam.side} style={roamStyle}><div className="mora-hop" style={hopStyle}><OwlCharacter state={state.characterState} speaking={state.speaking} mouthLevel={state.mouthLevel} gift={state.gift} eyeOverride={state.eyeOverride} faceHidden={state.faceHidden} speed={state.speed} persona={persona} reaction={state.reaction} /></div>{/* The deck lives here rather than in the table: it is Mora's, so it rides the
       roam wrapper and stays at her wing wherever she walks. The table below is left
       to the cards of the reading alone. */}
-<div className={`mora-deck deck-${state.deckStage}`}><FullDeck /></div></div></section><PhaseMessage state={state} /><TarotTable state={state} /><div className="scene-footer"><div className="tier-strip" aria-label="Tipos de lectura"><span>Perfume · 1</span><span>Hand Heart · 3</span><span>Fairy Hide · 5</span><span>Face-pulling · 7</span></div><div className="cta"><span className="cta-glyph">✦</span><strong>Escribe una pregunta para participar en el LIVE</strong><span className="cta-glyph">✦</span></div><p>Entretenimiento y reflexión personal</p></div>{state.safe && <SafeZone />}</div>;
+<div className={`mora-deck deck-${state.deckStage}`}><FullDeck /></div></div></section><PhaseMessage state={state} /><TarotTable state={state} /><div className="scene-footer"><div className="tier-strip" aria-label="Tipos de lectura"><span>Perfume · 1</span><span>Hand Heart · 3</span><span>Fairy Hide · 5</span><span>Face-pulling · 7</span></div><div className="cta"><span className="cta-glyph">✦</span><strong>Escribe una pregunta para participar en el LIVE</strong><span className="cta-glyph">✦</span></div><p>Personaje virtual · lectura generada con IA · Entretenimiento y reflexión personal · regalos opcionales{state.viewerCount>0?` · ${state.viewerCount} en vivo`:""}</p></div>{state.safe && <SafeZone />}</div>;
 }
 
 function TestPanel({ state, update, controller }: { state: SceneState; update: (patch: Partial<SceneState>) => void; controller: VisualController }) {
@@ -646,6 +647,7 @@ interface RendererServerMessage {
   kind?: string;
   name?: string;
   detail?: string;
+  viewerCount?: number;
 }
 
 function rendererSocketUrl(): string {
@@ -979,6 +981,7 @@ function useLiveRenderer(enabled: boolean, controller: VisualController): void {
           const name = typeof message.name === "string" ? message.name.trim().slice(0, 22) : "";
           if (name) controller.pushViewerPulse(message.kind as PulseKind, name, typeof message.detail === "string" ? message.detail.slice(0, 28) : "");
         }
+        if(message.type==="ROOM_STATS"&&Number.isFinite(Number(message.viewerCount)))controller.setViewerCount(Math.max(0,Math.floor(Number(message.viewerCount))));
         if (message.type === "RESET") {
           clearPlayback();
           controller.resetScene();
@@ -1013,7 +1016,7 @@ function useLiveRenderer(enabled: boolean, controller: VisualController): void {
 
 function initialSceneState(): SceneState {
   const locale = resolveRendererLocale(new URLSearchParams(location.search).get("locale") ?? document.documentElement.lang);
-  return { characterState: "idle", phase: "waiting", deckStage: "stacked", locale, viewer: "", question: "", status: "", customTitle: "", customSubtitle: "", cards: [], speaking: false, mouthLevel: 0, gift: null, safe: false, eyeOverride: null, speed: 1, faceHidden: false, preview360: false, pulses: [], reaction: null };
+  return { characterState: "idle", phase: "waiting", deckStage: "stacked", locale, viewer: "", question: "", status: "", customTitle: "", customSubtitle: "", viewerCount:0, cards: [], speaking: false, mouthLevel: 0, gift: null, safe: false, eyeOverride: null, speed: 1, faceHidden: false, preview360: false, pulses: [], reaction: null };
 }
 
 function App() {
@@ -1100,6 +1103,7 @@ function App() {
       const requestedPhase = status.startsWith("phase:") ? status.slice(6) as VisualPhase : null;
       update({ status, ...(requestedPhase && visualPhases.includes(requestedPhase) ? { phase: requestedPhase, customTitle: "", customSubtitle: "" } : {}) });
     },
+    setViewerCount:(viewerCount)=>update({viewerCount}),
     showInteraction: (customTitle, customSubtitle, characterState="listening", effect, durationMs=4500) => {
       window.clearTimeout(interactionTimer.current);
       update({customTitle,customSubtitle,characterState,speaking:false,...(effect?{gift:effect}:{})});

@@ -1,5 +1,5 @@
 import { describe,expect,it,vi } from "vitest";
-import { GeminiReadingGenerator,createReadingGenerator } from "@tarot/adapters";
+import { GeminiInteractionGenerator,GeminiReadingGenerator,createReadingGenerator } from "@tarot/adapters";
 
 describe("Gemini reading provider",()=>{
   it("uses Gemini 3.5 Flash-Lite structured output without deprecated sampling parameters",async()=>{
@@ -20,5 +20,23 @@ describe("Gemini reading provider",()=>{
 
   it("requires a Gemini key when Gemini is selected",()=>{
     expect(()=>createReadingGenerator({provider:"gemini",model:"gemini-3.5-flash-lite"})).toThrow("GEMINI_API_KEY");
+  });
+
+  it("checks the shared budget before sending a provider request",async()=>{
+    const request=vi.fn();
+    const beforeRequest=vi.fn(()=>{throw new Error("daily request budget exhausted");});
+    const generator=new GeminiReadingGenerator("secret-key","gemini-3.5-flash-lite",request as unknown as typeof fetch,{beforeRequest});
+    await expect(generator.generate({locale:"es-MX",question:"¿Qué puedo observar?",cards:[{id:"the-star",orientation:"upright",meaning:"esperanza"}],maxWords:80})).rejects.toThrow("daily request budget exhausted");
+    expect(beforeRequest).toHaveBeenCalledOnce();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("generates a short viewer-specific interaction without engagement solicitation",async()=>{
+    const output={safe:true as const,spokenText:"Luna, ese cambio que mencionas suena importante. ¿Qué parte te gustaría mirar con más calma hoy?",tone:"curious" as const};
+    const request=vi.fn(async()=>({ok:true,status:200,json:async()=>({candidates:[{content:{parts:[{text:JSON.stringify(output)}]}}]})}) as Response);
+    const generator=new GeminiInteractionGenerator("secret-key","gemini-3.5-flash-lite",request as unknown as typeof fetch);
+
+    await expect(generator.generate({locale:"es-MX",viewerName:"Luna",comment:"Estoy atravesando un cambio",maxWords:32})).resolves.toEqual(output);
+    expect(String((request.mock.calls[0]?.[1] as RequestInit).body)).toContain("No pidas regalos");
   });
 });

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
-import { liveEventSchema, readingOutputSchema, type LiveEvent, type ReadingOutput, type ModerationResult } from "@tarot/contracts";
+import { interactionOutputSchema, liveEventSchema, readingOutputSchema, type InteractionOutput, type LiveEvent, type ReadingOutput, type ModerationResult } from "@tarot/contracts";
 import { buildSafeFallback, premoderate } from "@tarot/domain";
 import { cardName } from "@tarot/tarot";
 import WebSocket, { type RawData } from "ws";
@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 
 export interface LiveEventSource { connect(): Promise<void>; disconnect(): Promise<void>; events(): AsyncIterable<LiveEvent>; }
 export interface ReadingGenerator { generate(input: { locale:string; question:string; cards:Array<{id:string; orientation:string; meaning:string}>; maxWords:number }): Promise<ReadingOutput>; }
+export interface InteractionGenerator { generate(input:{locale:string;viewerName:string;comment:string;maxWords:number}):Promise<InteractionOutput>; }
 export type SpeechFormat = "wav" | "mp3";
 export interface SpeechProvider { synthesize(input: { locale:string; voice:string; text:string }): Promise<{contentHash:string; localPath:string; durationMs:number; format:SpeechFormat}>; }
 export interface SafetyModerator { moderate(input: {question:string}): Promise<ModerationResult>; }
@@ -68,6 +69,8 @@ export function normalizeTikfinityPayload(payload: unknown, defaultSessionId: st
   if (type.includes("disconnected") || type === "connectionclose" || type === "disconnect") return liveEventSchema.parse({ ...common, type: "DISCONNECTED" });
   if (type.includes("comment") || type.includes("chat") || type.includes("message")) { const text = textValue(firstValue(objects, ["text", "comment", "message", "content", "body"])); return user && text ? liveEventSchema.parse({ ...common, type: "COMMENT", user, text }) : undefined; }
   if (type.includes("follow")) return user ? liveEventSchema.parse({ ...common, type: "FOLLOW", user }) : undefined;
+  if (type === "member" || type.includes("join") || type.includes("enter")) return user ? liveEventSchema.parse({ ...common, type: "JOIN", user }) : undefined;
+  if (type === "roomuser" || type === "roomstats") { const viewerCount=numberValue(firstValue(objects,["viewerCount","viewer_count","viewers","count"])); return viewerCount!==undefined&&viewerCount>=0?liveEventSchema.parse({...common,type:"ROOM_STATS",viewerCount:Math.floor(viewerCount)}):undefined; }
   if (type.includes("like") || type.includes("heart")) { const quantity = numberValue(firstValue(objects, ["quantity", "count", "likes"])) ?? 1; return user && quantity > 0 ? liveEventSchema.parse({ ...common, type: "LIKE", user, quantity: Math.floor(quantity) }) : undefined; }
   if (type.includes("gift") || type.includes("rose") || type.includes("diamond")) { const giftRecord = record(firstValue(objects, ["gift", "giftInfo", "gift_info"])); const giftId = textValue(giftRecord && firstValue([giftRecord], ["giftId", "gift_id", "id", "code"])) ?? textValue(firstValue(objects, ["giftId", "gift_id", "giftCode", "gift_code"])); const giftName = textValue(giftRecord && firstValue([giftRecord], ["giftName", "gift_name", "name"])) ?? textValue(firstValue(objects, ["giftName", "gift_name", "name"])) ?? giftId; const quantity = numberValue(giftRecord && firstValue([giftRecord], ["quantity", "count", "repeatCount", "repeat_count"])) ?? numberValue(firstValue(objects, ["quantity", "count", "repeatCount", "repeat_count"])) ?? 1; const coins = numberValue(giftRecord && firstValue([giftRecord], ["coins", "coin", "coinCount", "coin_count", "diamondCount", "diamond_count"])) ?? numberValue(firstValue(objects, ["coins", "coin", "coinCount", "coin_count", "diamondCount", "diamond_count"])); const repeatEnd = booleanValue(giftRecord && firstValue([giftRecord], ["repeatEnd", "repeat_end"])) ?? booleanValue(firstValue(objects, ["repeatEnd", "repeat_end"])); if (!user || !giftId || !giftName || quantity <= 0) return undefined; const progress = repeatEnd !== undefined ? !repeatEnd : type.includes("progress") || type.includes("streak") || type.includes("repeat"); return liveEventSchema.parse({ ...common, type: progress ? "GIFT_PROGRESS" : "GIFT_COMPLETED", user, giftId, giftName, quantity: Math.floor(quantity), ...(coins !== undefined ? { coins } : {}) }); }
   return undefined;
@@ -133,10 +136,30 @@ export class MockModerator implements SafetyModerator { async moderate(input: {q
 export class DeterministicReadingGenerator implements ReadingGenerator { async generate(input: { locale:string; question:string; cards:Array<{id:string; orientation:string; meaning:string}>; maxWords:number }): Promise<ReadingOutput> { const cards = input.cards.map((card) => ({cardId: card.id, interpretation: `${cardName(card.id, input.locale)} sugiere ${card.meaning}; úsalo como una invitación a observar, no como una certeza.`})); const opening = "Gracias por compartir tu pregunta."; const summary = "La lectura apunta a una oportunidad de elegir con calma y cuidar tus límites."; const closing = "Lectura para entretenimiento y reflexión personal. Quédate con lo que te ayude y decide desde tu propio criterio."; const spokenText = `${opening} ${cards.map((card) => card.interpretation).join(" ")} ${summary} ${closing}`.split(/\s+/).slice(0, input.maxWords).join(" "); return {safe:true, category:"general", opening, cards, summary, closing, spokenText, safetyFlags:[]}; } }
 export class MockReadingGenerator extends DeterministicReadingGenerator {}
 
-export type GeminiReadingHooks={onAttempt?:()=>void;onSuccess?:()=>void;onFailure?:(error:unknown)=>void};
+export class DeterministicInteractionGenerator implements InteractionGenerator {
+  async generate(input:{locale:string;viewerName:string;comment:string;maxWords:number}):Promise<InteractionOutput> {
+    const focus=input.comment.split(/\s+/).slice(0,8).join(" ");
+    const variants:Array<{text:string;tone:InteractionOutput["tone"]}>=[
+      {text:`${input.viewerName}, te escucho con “${focus}”. Gracias por traer esa intención al LIVE.`,tone:"warm"},
+      {text:`${input.viewerName}, lo que dices sobre “${focus}” abre una buena pregunta para mirar con calma.`,tone:"curious"},
+      {text:`${input.viewerName}, recibí tu mensaje sobre “${focus}”. Vamos a mantener esa idea presente.`,tone:"grateful"},
+      {text:`${input.viewerName}, gracias por poner en palabras “${focus}”. Esa reflexión ya forma parte de la conversación.`,tone:"reflective"},
+      {text:`${input.viewerName}, noto la intención detrás de “${focus}”. Tómate un momento y observa qué te resuena.`,tone:"reflective"},
+      {text:`${input.viewerName}, tu comentario sobre “${focus}” llegó a Mora. Gracias por participar de verdad.`,tone:"grateful"},
+      {text:`${input.viewerName}, “${focus}” merece una mirada tranquila. Gracias por compartirlo en vivo.`,tone:"warm"},
+      {text:`${input.viewerName}, me quedo con esa parte: “${focus}”. Vamos a explorarla sin apresurar conclusiones.`,tone:"curious"}
+    ];
+    const digest=crypto.createHash("sha256").update(`${input.viewerName}:${input.comment}`).digest();
+    const variant=variants[digest[0]!%variants.length]!;
+    return {safe:true,spokenText:variant.text.split(/\s+/).slice(0,input.maxWords).join(" "),tone:variant.tone};
+  }
+}
+
+export type GeminiReadingHooks={beforeRequest?:()=>void;onAttempt?:()=>void;onSuccess?:()=>void;onFailure?:(error:unknown)=>void};
 export class GeminiReadingGenerator implements ReadingGenerator {
   constructor(private readonly apiKey:string,private readonly model:string,private readonly request:typeof fetch=fetch,private readonly hooks:GeminiReadingHooks={}) {}
   async generate(input:{locale:string;question:string;cards:Array<{id:string;orientation:string;meaning:string}>;maxWords:number}):Promise<ReadingOutput> {
+    this.hooks.beforeRequest?.();
     this.hooks.onAttempt?.();
     try {
       const response=await this.request(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,{method:"POST",headers:{"x-goog-api-key":this.apiKey,"content-type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:`Escribe únicamente una lectura de tarot segura en ${input.locale}, para entretenimiento y reflexión personal. Devuelve exclusivamente un objeto JSON con las claves safe, category, opening, cards, summary, closing, spokenText y safetyFlags. Cada elemento de cards debe tener cardId e interpretation. No hagas predicciones ciertas, diagnósticos, consejos médicos, legales o financieros, ni afirmaciones de hechos personales que no estén en la pregunta. Interpreta solamente las cartas proporcionadas, incluye cada cardId exactamente una vez y no excedas ${input.maxWords} palabras en spokenText. El cierre y spokenText deben conservar el aviso de entretenimiento o reflexión.`}]},contents:[{role:"user",parts:[{text:JSON.stringify({question:input.question,cards:input.cards})}]}],generationConfig:{responseMimeType:"application/json"}})});
@@ -154,6 +177,30 @@ export class GeminiReadingGenerator implements ReadingGenerator {
     }
   }
 }
+export class GeminiInteractionGenerator implements InteractionGenerator {
+  constructor(private readonly apiKey:string,private readonly model:string,private readonly request:typeof fetch=fetch,private readonly hooks:GeminiReadingHooks={}) {}
+  async generate(input:{locale:string;viewerName:string;comment:string;maxWords:number}):Promise<InteractionOutput> {
+    this.hooks.beforeRequest?.();
+    this.hooks.onAttempt?.();
+    try {
+      const response=await this.request(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,{method:"POST",headers:{"x-goog-api-key":this.apiKey,"content-type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:`Responde como Mora, una mascota virtual de tarot en un LIVE. Escribe una reacción breve, cálida y claramente conectada con el comentario real del espectador. Máximo ${input.maxWords} palabras, en ${input.locale}. No pidas regalos, likes, follows ni compartidos. No prometas una lectura, no hagas predicciones, diagnósticos o afirmaciones sobrenaturales. No repitas el comentario completo. Devuelve solo JSON con safe=true, spokenText y tone; tone debe ser warm, curious, reflective o grateful.`}]},contents:[{role:"user",parts:[{text:JSON.stringify({viewerName:input.viewerName,comment:input.comment})}]}],generationConfig:{responseMimeType:"application/json"}})});
+      const responseText=typeof response.text==="function"?await response.text():JSON.stringify(await response.json());
+      if(!response.ok)throw new Error(`Gemini interaction request failed (${response.status})${responseText?`: ${responseText.slice(0,800)}`:""}`);
+      const body=JSON.parse(responseText) as {candidates?:Array<{content?:{parts?:Array<{text?:string}>}}>};
+      const content=body.candidates?.[0]?.content?.parts?.map((part)=>part.text??"").join("").trim();
+      if(!content)throw new Error("Gemini interaction response was empty");
+      const output=interactionOutputSchema.parse(JSON.parse(content));
+      const wordCount=output.spokenText.trim().split(/\s+/).filter(Boolean).length;
+      if(wordCount>input.maxWords)throw new Error("Gemini interaction exceeded the word limit");
+      if(/\b(regal|gift|like|follow|sígueme|compart|garantiz|definitivamente|sin duda)\b/i.test(output.spokenText))throw new Error("Gemini interaction contained an engagement request or certainty");
+      this.hooks.onSuccess?.();
+      return output;
+    } catch(error) {
+      this.hooks.onFailure?.(error);
+      throw error;
+    }
+  }
+}
 export class FallbackReadingGenerator implements ReadingGenerator {
   constructor(private readonly primary:ReadingGenerator,private readonly fallback:ReadingGenerator,private readonly primaryAttempts=2) {}
   async generate(input:{locale:string;question:string;cards:Array<{id:string;orientation:string;meaning:string}>;maxWords:number}):Promise<ReadingOutput> { let lastError:unknown; for(let attempt=0;attempt<this.primaryAttempts;attempt++) { try { const output=await this.primary.generate(input); validateProviderReading(input,output); return output; } catch(error) { lastError=error; } } void lastError; return this.fallback.generate(input); }
@@ -161,6 +208,7 @@ export class FallbackReadingGenerator implements ReadingGenerator {
 function validateProviderReading(input:{cards:Array<{id:string}>;maxWords:number},output:ReadingOutput):void { const ids=output.cards.map((card)=>card.cardId); if(!output.safe||ids.length!==input.cards.length||new Set(ids).size!==ids.length||input.cards.some((card)=>!ids.includes(card.id))) throw new Error("Reading provider omitted or duplicated selected cards"); if(output.spokenText.trim().split(/\s+/).length>input.maxWords) throw new Error("Reading provider exceeded the word limit"); if(/\b(definitivamente|sin duda|garantiz|va a ocurrir|sé que tú|sé que él|sé que ella)\b/i.test(output.spokenText)) throw new Error("Reading provider returned certainty or unsupported facts"); if(!/\b(entretenimiento|reflexión)\b/i.test(`${output.closing} ${output.spokenText}`)) throw new Error("Reading provider omitted the permanent disclaimer"); }
 export type ReadingGeneratorOptions={provider:"deterministic"|"mock"|"gemini";apiKey?:string;model:"gemini-3.5-flash-lite";hooks?:GeminiReadingHooks};
 export function createReadingGenerator(options:ReadingGeneratorOptions):ReadingGenerator { if(options.provider==="gemini") { if(!options.apiKey) throw new Error("LLM_PROVIDER=gemini requires GEMINI_API_KEY"); return new GeminiReadingGenerator(options.apiKey,options.model,fetch,options.hooks); } return new DeterministicReadingGenerator(); }
+export function createInteractionGenerator(options:ReadingGeneratorOptions):InteractionGenerator { if(options.provider==="gemini") { if(!options.apiKey) throw new Error("LLM_PROVIDER=gemini requires GEMINI_API_KEY"); return new GeminiInteractionGenerator(options.apiKey,options.model,fetch,options.hooks); } return new DeterministicInteractionGenerator(); }
 function wavSilence(durationMs:number): Buffer { const sampleRate = 8_000; const channels = 1; const bitsPerSample = 16; const dataSize = Math.max(1, Math.ceil(sampleRate * durationMs / 1_000) * channels * bitsPerSample / 8); const buffer = Buffer.alloc(44 + dataSize); buffer.write("RIFF", 0, "ascii"); buffer.writeUInt32LE(36 + dataSize, 4); buffer.write("WAVE", 8, "ascii"); buffer.write("fmt ", 12, "ascii"); buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(channels, 22); buffer.writeUInt32LE(sampleRate, 24); buffer.writeUInt32LE(sampleRate * channels * bitsPerSample / 8, 28); buffer.writeUInt16LE(channels * bitsPerSample / 8, 32); buffer.writeUInt16LE(bitsPerSample, 34); buffer.write("data", 36, "ascii"); buffer.writeUInt32LE(dataSize, 40); return buffer; }
 async function synthesizeWindowsWave(filePath:string, text:string): Promise<boolean> { if (process.platform !== "win32") return false; const encodedText = Buffer.from(text, "utf16le").toString("base64"); const escapedPath = filePath.replace(/'/g, "''"); const script = `$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedText}'));Add-Type -AssemblyName System.Speech;$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;try{$s.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::NotSet,[System.Speech.Synthesis.VoiceAge]::NotSet,0,[Globalization.CultureInfo]::GetCultureInfo('es-MX'))}catch{};$s.SetOutputToWaveFile('${escapedPath}');$s.Speak($text);$s.Dispose()`; try { await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true }); return true; } catch { return false; } }
 function wavDurationMs(audio:Buffer):number { if(audio.length<44||audio.subarray(0,4).toString("ascii")!=="RIFF"||audio.subarray(8,12).toString("ascii")!=="WAVE") throw new Error("Invalid WAV audio"); const byteRate=audio.readUInt32LE(28); const dataSize=audio.readUInt32LE(40); if(byteRate<=0) throw new Error("Invalid WAV byte rate"); return Math.max(1,Math.round(dataSize*1000/byteRate)); }

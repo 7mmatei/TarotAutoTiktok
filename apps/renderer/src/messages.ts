@@ -68,7 +68,7 @@ export const phaseCopy: Record<RendererLocale, Record<VisualPhase, PhaseMessage>
   },
 };
 
-export type PulseKind = "comment" | "like" | "follow" | "gift" | "share";
+export type PulseKind = "comment" | "like" | "follow" | "join" | "gift" | "share";
 
 interface PulseLabel {
   glyph: string;
@@ -79,14 +79,16 @@ export const pulseCopy: Record<RendererLocale, Record<PulseKind, PulseLabel>> = 
   "es-MX": {
     comment: { glyph: "✎", action: "preguntó" },
     like: { glyph: "♡", action: "mandó luz" },
-    follow: { glyph: "✦", action: "se unió" },
+    follow: { glyph: "✦", action: "siguió el LIVE" },
+    join: { glyph: "◌", action: "entró al LIVE" },
     gift: { glyph: "✧", action: "regaló" },
     share: { glyph: "↗", action: "compartió" },
   },
   "pt-BR": {
     comment: { glyph: "✎", action: "perguntou" },
     like: { glyph: "♡", action: "mandou luz" },
-    follow: { glyph: "✦", action: "entrou" },
+    follow: { glyph: "✦", action: "seguiu o LIVE" },
+    join: { glyph: "◌", action: "entrou no LIVE" },
     gift: { glyph: "✧", action: "presenteou" },
     share: { glyph: "↗", action: "compartilhou" },
   },
