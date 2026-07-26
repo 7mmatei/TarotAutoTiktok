@@ -51,6 +51,11 @@ describe("TikFinity normalization", () => {
     expect(room).toMatchObject({type:"ROOM_STATS",viewerCount:7});
   });
 
+  it("uses TikFinity likeCount as the packet delta rather than counting packets",()=>{
+    const event=normalizeTikfinityPayload({event:"like",data:{likeCount:15,totalLikeCount:116,userId:"u-like",uniqueId:"luna",nickname:"Luna"}},"session-1");
+    expect(event).toMatchObject({type:"LIKE",quantity:15,user:{platformUserId:"u-like"}});
+  });
+
   it("rejects unknown or incomplete provider payloads", () => {
     expect(normalizeTikfinityPayload({ type: "unknown", id: "x" }, "session-1")).toBeUndefined();
     expect(normalizeTikfinityPayload({ type: "comment", text: "missing user" }, "session-1")).toBeUndefined();
